@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import time
 from dataclasses import dataclass, asdict
+from datetime import datetime
 from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field
@@ -234,6 +236,13 @@ async def run(
             elapsed = time.time() - start
             print(f"  {completed}/{len(tasks)} chunks processed "
                   f"({len(all_pairs)} pairs, {elapsed:.0f}s)")
+
+    # Backup existing file if it exists
+    if output_path.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = output_path.parent / f"{output_path.stem}_backup_{timestamp}{output_path.suffix}"
+        shutil.copy2(output_path, backup_path)
+        print(f"\n[BACKUP] Existing file backed up to: {backup_path.name}")
 
     # Save
     with open(output_path, "w", encoding="utf-8") as f:

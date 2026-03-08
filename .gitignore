@@ -43,8 +43,11 @@ env/
 Thumbs.db
 
 # Project specific
-data/synthetic/
+data/synthetic/*.jsonl
+data/synthetic/*_backup_*.jsonl
 data/results/
+data/hf_dataset/
+data/hf_dataset.parquet
 *.log
 
 # Jupyter
