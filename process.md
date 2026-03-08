@@ -62,7 +62,16 @@ Diversity ensures the embedding model learns to match varied phrasings to the sa
 
 ### Training format
 
-We generate `(anchor, positive)` pairs only — no hard negatives at this stage. MNRL uses in-batch negatives (with batch size 64, each sample gets 63 negatives for free). Hard negatives are mined later from the fine-tuned model checkpoint (Stage 2 training), because mining from an already-adapted model produces more informative negatives.
+We generate `(anchor, positive)` pairs only — no hard negatives at this stage. MNRL uses in-batch negatives: with batch size 64, each sample gets 63 negatives for free (every other sample in the batch serves as a negative). 
+
+**Why batch size 64?** Larger batches provide more negatives per sample, which strengthens the training signal. Batch size 64 is chosen as a balance between:
+- **GPU memory** — fits on a 16GB GPU with ~110M parameter models (e.g., multilingual-e5-base)
+- **Training quality** — 63 negatives per sample is sufficient; beyond 128 the returns diminish
+- **Dataset size** — with ~2,300 pairs, batch size 64 gives ~36 batches per epoch (enough for stable gradients)
+
+For smaller GPUs (8GB), use batch size 32. For larger GPUs (24GB+), batch size 128 can improve quality slightly but isn't necessary.
+
+Hard negatives are mined later from the fine-tuned model checkpoint (Stage 2 training), because mining from an already-adapted model produces more informative negatives than mining from the base model.
 
 ### Positive chunks use `chunks_without_context.jsonl`
 

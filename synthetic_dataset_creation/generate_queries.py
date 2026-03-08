@@ -23,21 +23,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Default paths (can be overridden in run())
 # ---------------------------------------------------------------------------
 
-CHUNKS_PATH = (
+DEFAULT_CHUNKS_PATH = (
     Path(__file__).resolve().parent.parent
     / "data" / "chunks" / "chunks_without_context.jsonl"
 )
-OUTPUT_PATH = (
+DEFAULT_OUTPUT_PATH = (
     Path(__file__).resolve().parent.parent
     / "data" / "synthetic" / "query_pairs.jsonl"
 )
-
-DEPLOYMENT = os.getenv("DEPLOYMENT_NAME_GPT5_MINI", "gpt-5-mini")
-QUERIES_PER_CHUNK = 4
-MAX_CONCURRENT = 10
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -52,23 +48,27 @@ dit fragment het relevante antwoord bevat.
 
 Regels:
 - Schrijf ALLEEN in het Nederlands.
-- Elke query moet een andere invalshoek hebben. Wissel af tussen:
-  * Feitelijke vragen ("Wat bepaalt artikel X over...?")
-  * Definitievragen ("Wat wordt bedoeld met...?")
-  * Procedurele vragen ("Welke stappen zijn vereist voor...?")
-  * Scenariovragen ("Een bedrijf wil X inzetten voor Y, welke regels gelden?")
+- Elke query moet een andere invalshoek hebben. Wissel VERPLICHT af tussen:
+  * Feitelijke vragen ("Welke AI-systemen zijn verboden?")
+  * Definitievragen ("Wat wordt bedoeld met hoog-risico AI?")
+  * Procedurele vragen ("Hoe voldoe ik aan de transparantieverplichtingen?")
+  * Scenariovragen ("Een bedrijf wil gezichtsherkenning inzetten, welke regels \
+gelden?")
+- BELANGRIJK: Genereer minstens 1 procedurele vraag ("Hoe...?", "Welke stappen...?") \
+en 1 scenariovraag ("Een bedrijf/organisatie wil...") per {n} queries.
+- Varieer de lengte: genereer zowel korte (30-60 tekens) als langere queries \
+(100-150 tekens).
 - Query's moeten realistisch zijn — alsof een jurist, beleidsmaker of \
 compliance officer ze zou stellen.
 - Verwijs NIET letterlijk naar artikelnummers in de query (de gebruiker kent \
 die nummers vaak niet).
-- Houd query's beknopt (1-2 zinnen).
 - Antwoord met een JSON-object met een "queries" veld.
 
 Voorbeeld output:
-{{"queries": ["Welke AI-systemen zijn verboden onder de EU AI Act?", \
-"Wanneer wordt een AI-systeem als hoog risico beschouwd?", \
-"Moet een aanbieder van AI een conformiteitsbeoordeling laten uitvoeren?", \
-"Wat zijn de transparantieverplichtingen voor chatbots?"]}}
+{{"queries": ["AI verboden?", \
+"Hoe voldoe ik aan de conformiteitseisen voor hoog-risico AI-systemen?", \
+"Een zorginstelling wil AI gebruiken voor diagnoses, welke verplichtingen gelden?", \
+"Wat wordt bedoeld met transparantieverplichtingen voor AI?"]}}
 """
 
 
@@ -121,7 +121,7 @@ async def generate_queries_for_chunk(
     deployment: str,
     chunk: dict,
     semaphore: asyncio.Semaphore,
-    n: int = QUERIES_PER_CHUNK,
+    n: int = 4,
 ) -> list[QueryPair]:
     """Call the LLM to generate N queries for a single chunk using Responses API."""
     user_msg = USER_PROMPT_TEMPLATE.format(
@@ -187,12 +187,14 @@ async def generate_queries_for_chunk(
 async def run(
     chunks_path: Path | None = None,
     output_path: Path | None = None,
-    n_queries: int = QUERIES_PER_CHUNK,
+    n_queries: int = 4,
     max_chunks: int | None = None,
+    deployment: str = "gpt-5-mini",
+    max_concurrent: int = 10,
 ):
     """Generate queries for all chunks and save to JSONL."""
-    chunks_path = chunks_path or CHUNKS_PATH
-    output_path = output_path or OUTPUT_PATH
+    chunks_path = chunks_path or DEFAULT_CHUNKS_PATH
+    output_path = output_path or DEFAULT_OUTPUT_PATH
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load chunks
@@ -203,15 +205,14 @@ async def run(
         chunks = chunks[:max_chunks]
 
     print(f"Generating {n_queries} queries per chunk for {len(chunks)} chunks "
-          f"(deployment: {DEPLOYMENT}) ...")
+          f"(deployment: {deployment}) ...")
 
     # Use Responses API endpoint directly
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT_GPT5_MINI", "")
     api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
-    deployment = DEPLOYMENT
 
     client = httpx.AsyncClient()
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    semaphore = asyncio.Semaphore(max_concurrent)
 
     tasks = [
         generate_queries_for_chunk(
@@ -253,6 +254,26 @@ async def run(
 if __name__ == "__main__":
     import argparse
 
+    # -----------------------------------------------------------------------
+    # CONFIG: Adjust these parameters for your use case
+    # -----------------------------------------------------------------------
+
+    # Number of queries to generate per chunk
+    # Higher = more training data, but diminishing returns beyond 5
+    # Typical range: 3-5 queries per chunk
+    QUERIES_PER_CHUNK = 4
+
+    # Azure OpenAI deployment name for query generation
+    # Must match your Azure deployment (e.g., gpt-5-mini, gpt-4o-mini)
+    DEPLOYMENT = os.getenv("DEPLOYMENT_NAME_GPT5_MINI", "gpt-5-mini")
+
+    # Max concurrent API requests
+    # Higher = faster generation, but risks rate limits
+    # Adjust based on your Azure quota (10 is safe for most deployments)
+    MAX_CONCURRENT = 10
+
+    # -----------------------------------------------------------------------
+
     parser = argparse.ArgumentParser(
         description="Generate synthetic queries for embedding fine-tuning"
     )
@@ -262,11 +283,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--queries-per-chunk", type=int, default=QUERIES_PER_CHUNK,
-        help=f"Number of queries to generate per chunk (default: {QUERIES_PER_CHUNK})"
+        help=f"Number of queries per chunk (default: {QUERIES_PER_CHUNK})"
     )
     args = parser.parse_args()
 
     asyncio.run(run(
         n_queries=args.queries_per_chunk,
         max_chunks=args.max_chunks,
+        deployment=DEPLOYMENT,
+        max_concurrent=MAX_CONCURRENT,
     ))
