@@ -8,7 +8,7 @@ task_categories:
 - feature-extraction
 task_ids:
 - semantic-similarity-scoring
-- semantic-search
+- document-retrieval
 pretty_name: EU AI Act (NL) - Synthetic Query-Chunk Pairs
 size_categories:
 - 1K<n<10K
