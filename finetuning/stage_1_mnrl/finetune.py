@@ -170,7 +170,7 @@ if __name__ == "__main__":
         print("  Consider using a cloud GPU for faster training.")
     else:
         gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1e9
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"  GPU: {gpu_name} ({gpu_mem:.1f} GB)")
 
     effective_batch = args.batch_size * args.grad_accum
