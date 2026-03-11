@@ -284,15 +284,15 @@ Each evaluator simulates a retrieval task:
 ### Checkpoints and model saving
 
 **How checkpoints work:**
-- After each epoch, the trainer saves a checkpoint to `models/multilingual-e5-large-ai-act-nl/checkpoint-{step}/`
+- After each epoch, the trainer saves a checkpoint to `models/stage_1_mnrl/checkpoint-{step}/`
 - Each checkpoint contains the full model weights, optimizer state, and training metadata
 - `save_total_limit=2` keeps only the 2 most recent checkpoints (prevents disk bloat)
 - At the end of training, the best checkpoint (by NDCG@10) is automatically loaded back
-- The final model is saved to `models/multilingual-e5-large-ai-act-nl/final/`
+- The final model is saved to `models/stage_1_mnrl/final/`
 
 **Checkpoint directory structure:**
 ```
-models/multilingual-e5-large-ai-act-nl/
+models/stage_1_mnrl/
 ├── checkpoint-30/          # Epoch 1 checkpoint (step 30)
 ├── checkpoint-60/          # Epoch 2 checkpoint (step 60)
 │   ├── model.safetensors   # Model weights
@@ -316,7 +316,7 @@ models/multilingual-e5-large-ai-act-nl/
 **2. TensorBoard loss curves:** The script logs to TensorBoard (`report_to="tensorboard"`). To view in Colab:
 ```python
 %load_ext tensorboard
-%tensorboard --logdir models/multilingual-e5-large-ai-act-nl/runs/
+%tensorboard --logdir models/stage_1_mnrl/runs/
 ```
 
 This shows:
