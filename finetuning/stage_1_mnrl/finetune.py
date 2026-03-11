@@ -87,16 +87,17 @@ if __name__ == "__main__":
     #
     # BATCH_SIZE: Actual per-device batch size.
     # With MNRL, each sample gets (batch_size - 1) in-batch negatives.
-    # 64 fits on Colab T4 (16GB) with e5-large + fp16.
+    # e5-large (560M) + Matryoshka (6 dims) needs smaller batch on T4.
+    # 32 fits on Colab T4 (16GB) with e5-large + fp16 + Matryoshka.
     # For CPU/low-memory: reduce to 16 and set GRAD_ACCUM_STEPS=4.
-    BATCH_SIZE = 64
+    BATCH_SIZE = 32
 
     # GRAD_ACCUM_STEPS: Simulate larger effective batch by accumulating
     # gradients over multiple steps before updating weights.
     # Effective batch size = BATCH_SIZE * GRAD_ACCUM_STEPS
-    # On Colab T4 with batch 64: set to 1 (no accumulation needed).
+    # On Colab T4 with batch 32: use 2 → effective batch = 64 (63 negatives).
     # On CPU with batch 16: set to 4 → effective batch = 64.
-    GRAD_ACCUM_STEPS = 1
+    GRAD_ACCUM_STEPS = 2
 
     # NUM_EPOCHS: Number of passes through the training data.
     # Small dataset (1,944 pairs) → keep low to avoid overfitting.
@@ -143,11 +144,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--batch-size", type=int, default=BATCH_SIZE,
-        help="Per-device batch size (default: 64)"
+        help="Per-device batch size (default: 32)"
     )
     parser.add_argument(
         "--grad-accum", type=int, default=GRAD_ACCUM_STEPS,
-        help="Gradient accumulation steps (default: 1)"
+        help="Gradient accumulation steps (default: 2)"
     )
     parser.add_argument(
         "--epochs", type=int, default=NUM_EPOCHS,
