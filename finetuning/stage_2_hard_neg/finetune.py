@@ -100,12 +100,17 @@ if __name__ == "__main__":
 
     # Training hyperparameters — tuned for Stage 2
     #
-    # BATCH_SIZE: Same as Stage 1. Each sample gets (batch_size - 1)
-    # in-batch negatives PLUS its explicit hard negative.
-    BATCH_SIZE = 64
+    # BATCH_SIZE: Reduced from Stage 1's 64 to 32 because MNRL now
+    # processes 3 columns (anchor, positive, negative) instead of 2.
+    # With Matryoshka (6 dims), that's 18 forward passes vs 12 → OOM
+    # at batch 64. Each sample gets 31 in-batch negatives + 1 hard
+    # negative — the hard negative is far more informative than 32
+    # extra random in-batch negatives would be.
+    BATCH_SIZE = 32
 
-    # No gradient accumulation — batch 64 fits with SDPA + grad ckpt.
-    GRAD_ACCUM_STEPS = 1
+    # Gradient accumulation 2 → effective batch 64 for weight updates.
+    # NOTE: only per-device batch (32) determines in-batch negatives.
+    GRAD_ACCUM_STEPS = 2
 
     # NUM_EPOCHS: Fewer than Stage 1. Hard negatives provide a
     # stronger training signal — the model learns faster per step
