@@ -309,11 +309,11 @@ if __name__ == "__main__":
     model.save_pretrained(str(final_path))
     print(f"\nModel saved to: {final_path}")
 
-    # Print summary — show quality at every dimension
+    # Print summary — NDCG@10 across all Matryoshka dimensions
     print(f"\n{'='*58}")
-    print(f"Training Complete — Matryoshka Evaluation")
+    print("Matryoshka Dimension Comparison (NDCG@10)")
     print(f"{'='*58}")
-    print(f"{'Dim':>6}  {'Base NDCG@10':>14}  {'Finetuned':>14}  {'Δ':>8}")
+    print(f"{'Dim':>6}  {'Base':>14}  {'Finetuned':>14}  {'Δ':>8}")
     print(f"{'-'*6}  {'-'*14}  {'-'*14}  {'-'*8}")
     for dim in MATRYOSHKA_DIMS:
         key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
@@ -321,4 +321,38 @@ if __name__ == "__main__":
         final = final_results[key]
         delta = final - base
         print(f"{dim:>6}  {base:>14.4f}  {final:>14.4f}  {delta:>+8.4f}")
+    print(f"{'='*58}")
+
+    # Detailed metrics at full dimensionality (1024)
+    full_dim = MATRYOSHKA_DIMS[0]
+    prefix = f"eu-ai-act-nl-dim{full_dim}_cosine_"
+    detail_metrics = [
+        ("NDCG@10", "ndcg@10"),
+        ("MRR@10", "mrr@10"),
+        ("MAP@100", "map@100"),
+        ("Accuracy@1", "accuracy@1"),
+        ("Accuracy@3", "accuracy@3"),
+        ("Accuracy@5", "accuracy@5"),
+        ("Accuracy@10", "accuracy@10"),
+        ("Precision@1", "precision@1"),
+        ("Precision@3", "precision@3"),
+        ("Precision@5", "precision@5"),
+        ("Precision@10", "precision@10"),
+        ("Recall@1", "recall@1"),
+        ("Recall@3", "recall@3"),
+        ("Recall@5", "recall@5"),
+        ("Recall@10", "recall@10"),
+    ]
+
+    print(f"\n{'='*58}")
+    print(f"Full Metrics at dim={full_dim}")
+    print(f"{'='*58}")
+    print(f"{'Metric':<16}  {'Base':>10}  {'Finetuned':>10}  {'Δ':>10}")
+    print(f"{'-'*16}  {'-'*10}  {'-'*10}  {'-'*10}")
+    for label, suffix in detail_metrics:
+        key = prefix + suffix
+        base = base_results.get(key, 0)
+        final = final_results.get(key, 0)
+        delta = final - base
+        print(f"{label:<16}  {base:>10.4f}  {final:>10.4f}  {delta:>+10.4f}")
     print(f"{'='*58}")
