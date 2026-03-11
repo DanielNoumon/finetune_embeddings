@@ -1,8 +1,11 @@
 """
-Fine-tune multilingual-e5-large on EU AI Act query-chunk pairs using MNRL.
+Fine-tune multilingual-e5-large on EU AI Act query-chunk pairs
+using Matryoshka + MNRL.
 
-Uses Multiple Negatives Ranking Loss with in-batch negatives.
-Evaluates with InformationRetrievalEvaluator (MRR@10, NDCG@10, Recall@10).
+Matryoshka Representation Learning wraps MNRL so the model learns
+useful embeddings at multiple dimensionalities (1024, 768, 512, 256,
+128, 64). At inference time, you can truncate embeddings to any of
+these sizes for a speed/quality tradeoff — no retraining needed.
 
 Handles multilingual-e5-large prefix requirements:
   - queries  → "query: " prefix
@@ -21,9 +24,15 @@ from sentence_transformers import (
     SentenceTransformerTrainer,
     SentenceTransformerTrainingArguments,
 )
-from sentence_transformers.losses import MultipleNegativesRankingLoss
+from sentence_transformers.losses import (
+    MatryoshkaLoss,
+    MultipleNegativesRankingLoss,
+)
 from sentence_transformers.training_args import BatchSamplers
-from sentence_transformers.evaluation import InformationRetrievalEvaluator
+from sentence_transformers.evaluation import (
+    InformationRetrievalEvaluator,
+    SequentialEvaluator,
+)
 
 
 def load_eval_data(
@@ -103,6 +112,13 @@ if __name__ == "__main__":
 
     # WEIGHT_DECAY: L2 regularization to prevent overfitting.
     WEIGHT_DECAY = 0.01
+
+    # MATRYOSHKA_DIMS: Dimensionalities to train Matryoshka embeddings
+    # for. The model learns useful embeddings at each truncation point.
+    # 1024 = full e5-large dimensionality (highest quality).
+    # 64   = smallest (fastest retrieval, ~16x less storage than 1024).
+    # At inference: model.encode(..., output_dimensionality=256)
+    MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
 
     # -------------------------------------------------------------------
 
@@ -184,26 +200,46 @@ if __name__ == "__main__":
     print(f"  Eval queries: {len(queries)}")
     print(f"  Eval corpus:  {len(corpus)}")
 
-    ir_evaluator = InformationRetrievalEvaluator(
-        queries=queries,
-        corpus=corpus,
-        relevant_docs=relevant_docs,
-        name="eu-ai-act-nl",
-        # multilingual-e5-large requires prefixes for encoding
-        query_prompt="query: ",
-        corpus_prompt="passage: ",
-        show_progress_bar=True,
-    )
+    # Build one IR evaluator per Matryoshka dimension.
+    # During training, each evaluator measures retrieval quality at
+    # that truncated dimensionality, so we can track quality/size
+    # tradeoffs across epochs.
+    evaluators = []
+    for dim in MATRYOSHKA_DIMS:
+        evaluators.append(
+            InformationRetrievalEvaluator(
+                queries=queries,
+                corpus=corpus,
+                relevant_docs=relevant_docs,
+                name=f"eu-ai-act-nl-dim{dim}",
+                truncate_dim=dim,
+                query_prompt="query: ",
+                corpus_prompt="passage: ",
+                show_progress_bar=True,
+            )
+        )
+    eval_suite = SequentialEvaluator(evaluators)
+
+    # Primary metric for best-model selection uses full 1024-dim
+    primary_metric = "eu-ai-act-nl-dim1024_cosine_ndcg@10"
 
     # Evaluate base model before training
-    print("\nEvaluating base model...")
-    base_results = ir_evaluator(model)
-    print(f"  Base NDCG@10:   {base_results[ir_evaluator.primary_metric]:.4f}")
+    print("\nEvaluating base model at all Matryoshka dims...")
+    base_results = eval_suite(model)
+    for dim in MATRYOSHKA_DIMS:
+        key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
+        print(f"  Base NDCG@10 (dim={dim}): {base_results[key]:.4f}")
 
     # -------------------------------------------------------------------
-    # 4. Define loss
+    # 4. Define loss — Matryoshka wrapping MNRL
     # -------------------------------------------------------------------
-    loss = MultipleNegativesRankingLoss(model)
+    # MatryoshkaLoss trains the inner MNRL loss at each dimension.
+    # The model learns that the first N dims of the embedding are
+    # independently useful for retrieval at each truncation point.
+    inner_loss = MultipleNegativesRankingLoss(model)
+    loss = MatryoshkaLoss(
+        model, inner_loss, matryoshka_dims=MATRYOSHKA_DIMS
+    )
 
     # -------------------------------------------------------------------
     # 5. Training arguments
@@ -232,7 +268,7 @@ if __name__ == "__main__":
         save_strategy="epoch",
         save_total_limit=2,
         load_best_model_at_end=True,
-        metric_for_best_model="eu-ai-act-nl_cosine_ndcg@10",
+        metric_for_best_model=primary_metric,
         # Logging — loss is logged every N steps.
         # With 1,944 train samples / batch 64 = ~30 steps/epoch.
         # logging_steps=5 gives ~6 log points per epoch (good granularity).
@@ -252,7 +288,7 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=train_dataset,
         loss=loss,
-        evaluator=ir_evaluator,
+        evaluator=eval_suite,
     )
 
     print(f"\nStarting training for {args.epochs} epochs...")
@@ -261,12 +297,10 @@ if __name__ == "__main__":
     trainer.train()
 
     # -------------------------------------------------------------------
-    # 7. Final evaluation
+    # 7. Final evaluation at all Matryoshka dimensions
     # -------------------------------------------------------------------
-    print("\nEvaluating fine-tuned model...")
-    final_results = ir_evaluator(model)
-    print(f"  Fine-tuned NDCG@10: "
-          f"{final_results[ir_evaluator.primary_metric]:.4f}")
+    print("\nEvaluating fine-tuned model at all Matryoshka dims...")
+    final_results = eval_suite(model)
 
     # -------------------------------------------------------------------
     # 8. Save
@@ -275,14 +309,16 @@ if __name__ == "__main__":
     model.save_pretrained(str(final_path))
     print(f"\nModel saved to: {final_path}")
 
-    # Print summary
-    base_score = base_results[ir_evaluator.primary_metric]
-    final_score = final_results[ir_evaluator.primary_metric]
-    improvement = final_score - base_score
-    print(f"\n{'='*50}")
-    print(f"Training Complete")
-    print(f"{'='*50}")
-    print(f"  Base NDCG@10:      {base_score:.4f}")
-    print(f"  Fine-tuned NDCG@10: {final_score:.4f}")
-    print(f"  Improvement:        {improvement:+.4f}")
-    print(f"{'='*50}")
+    # Print summary — show quality at every dimension
+    print(f"\n{'='*58}")
+    print(f"Training Complete — Matryoshka Evaluation")
+    print(f"{'='*58}")
+    print(f"{'Dim':>6}  {'Base NDCG@10':>14}  {'Finetuned':>14}  {'Δ':>8}")
+    print(f"{'-'*6}  {'-'*14}  {'-'*14}  {'-'*8}")
+    for dim in MATRYOSHKA_DIMS:
+        key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
+        base = base_results[key]
+        final = final_results[key]
+        delta = final - base
+        print(f"{dim:>6}  {base:>14.4f}  {final:>14.4f}  {delta:>+8.4f}")
+    print(f"{'='*58}")

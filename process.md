@@ -168,16 +168,48 @@ We chose `intfloat/multilingual-e5-large` (560M params) over alternatives:
 - Requires `"query: "` prefix for queries and `"passage: "` prefix for documents
 - Fits on Colab T4 (16GB VRAM) with batch size 64 + fp16
 
-### Loss function: Multiple Negatives Ranking Loss (MNRL)
+### Loss function: Matryoshka + MNRL
 
-MNRL is the standard loss for training retrieval models with `(query, positive_passage)` pairs. It uses **in-batch negatives**: for each query in a batch, every other passage in the batch serves as a negative example. No explicit hard negatives needed.
+We use two loss functions composed together:
 
-With batch size 64:
-- Each query gets **63 in-batch negatives** per training step
-- The model learns to rank the correct passage higher than all negatives
-- This is equivalent to a 64-way classification problem per sample
+**1. Multiple Negatives Ranking Loss (MNRL)** — the core contrastive loss for retrieval. It uses **in-batch negatives**: for each query in a batch, every other passage serves as a negative example. With batch size 64, each query gets 63 negatives — equivalent to a 64-way classification problem per sample.
 
-**Why MNRL over alternatives?**
+**2. Matryoshka Loss** — wraps MNRL so the model learns useful embeddings at multiple truncated dimensionalities simultaneously. During each training step, the loss is computed at every Matryoshka dimension and averaged.
+
+```python
+inner_loss = MultipleNegativesRankingLoss(model)
+loss = MatryoshkaLoss(
+    model, inner_loss,
+    matryoshka_dims=[1024, 768, 512, 256, 128, 64]
+)
+```
+
+### Why Matryoshka embeddings?
+
+Standard embeddings are fixed-size (e5-large = 1024 dims). Matryoshka Representation Learning (MRL) trains the model so that the **first N dimensions** of the embedding are independently useful. This enables:
+
+- **Flexible quality/speed tradeoff** — use 1024-dim for maximum accuracy, 128-dim for 8x faster search, no retraining needed
+- **Storage savings** — 64-dim embeddings use 16x less memory than 1024-dim
+- **Staged retrieval** — retrieve candidates with 128-dim, re-rank with 1024-dim
+- **Negligible training overhead** — MatryoshkaLoss adds ~10-15% training time (just extra forward passes at truncated dims)
+
+**Dimensions chosen: `[1024, 768, 512, 256, 128, 64]`**
+
+| Dim | Relative size | Use case |
+|---|---|---|
+| 1024 | 100% (full) | Maximum quality — final ranking, evaluation |
+| 768 | 75% | Compatible with common vector DB defaults |
+| 512 | 50% | Good balance for production RAG |
+| 256 | 25% | Fast retrieval with minimal quality loss |
+| 128 | 12.5% | Candidate retrieval in staged pipelines |
+| 64 | 6.25% | Ultra-compact — prototyping, edge deployment |
+
+At inference time, truncation is a single argument:
+```python
+model.encode(text, output_dimensionality=256)
+```
+
+**Why MNRL as the inner loss?**
 - **No hard negatives needed** at this stage — in-batch negatives are sufficient for an initial fine-tune
 - **Simple and effective** — standard approach for embedding fine-tuning
 - **Scales with batch size** — larger batches = more negatives = stronger signal
@@ -227,15 +259,16 @@ multilingual-e5 models require specific text prefixes to distinguish queries fro
 
 ### Evaluation during training
 
-We evaluate with `InformationRetrievalEvaluator` after each epoch. This simulates a real retrieval task:
+We evaluate with a `SequentialEvaluator` containing one `InformationRetrievalEvaluator` per Matryoshka dimension. After each epoch, retrieval quality is measured at all 6 truncation points (1024, 768, 512, 256, 128, 64).
 
+Each evaluator simulates a retrieval task:
 1. Encode all 340 eval queries (with `"query: "` prefix)
 2. Encode all 85 eval corpus chunks (with `"passage: "` prefix)
-3. For each query, rank all 85 chunks by cosine similarity
-4. Check if the correct chunk (from `relevant_docs.json`) ranks high
-5. Compute retrieval metrics
+3. Truncate both to the target dimensionality
+4. For each query, rank all 85 chunks by cosine similarity
+5. Check if the correct chunk ranks high → compute metrics
 
-**Metrics reported:**
+**Metrics reported per dimension:**
 
 | Metric | What it measures |
 |---|---|
@@ -246,7 +279,7 @@ We evaluate with `InformationRetrievalEvaluator` after each epoch. This simulate
 | **Precision@k** | What fraction of top-k results are relevant? |
 | **MAP@100** | Mean Average Precision — overall ranking quality. |
 
-**Best model selection:** The checkpoint with the highest `NDCG@10` on the eval set is kept (`load_best_model_at_end=True`).
+**Best model selection:** The checkpoint with the highest full-dim (1024) `NDCG@10` is kept (`load_best_model_at_end=True`, `metric_for_best_model="eu-ai-act-nl-dim1024_cosine_ndcg@10"`).
 
 ### Checkpoints and model saving
 
@@ -296,16 +329,23 @@ This shows:
 - **Loss increasing after epoch 2-3** → overfitting (reduce epochs)
 - **Eval metrics plateauing** → model has converged (can stop early)
 
-**3. Final summary:** The script prints a before/after comparison:
+**3. Final summary:** The script prints a Matryoshka quality table showing NDCG@10 at every dimension:
 ```
-==================================================
-Training Complete
-==================================================
-  Base NDCG@10:       0.XXXX
-  Fine-tuned NDCG@10: 0.XXXX
-  Improvement:        +0.XXXX
-==================================================
+==========================================================
+Training Complete — Matryoshka Evaluation
+==========================================================
+   Dim    Base NDCG@10       Finetuned         Δ
+------  --------------  --------------  --------
+  1024          0.XXXX          0.XXXX   +0.XXXX
+   768          0.XXXX          0.XXXX   +0.XXXX
+   512          0.XXXX          0.XXXX   +0.XXXX
+   256          0.XXXX          0.XXXX   +0.XXXX
+   128          0.XXXX          0.XXXX   +0.XXXX
+    64          0.XXXX          0.XXXX   +0.XXXX
+==========================================================
 ```
+
+This table reveals the quality/size tradeoff: ideally, 256-dim should retain most of 1024-dim's quality, while 64-dim will show a noticeable but acceptable drop.
 
 ### Running the training
 
