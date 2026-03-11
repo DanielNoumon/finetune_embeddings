@@ -268,6 +268,11 @@ if __name__ == "__main__":
         warmup_ratio=WARMUP_RATIO,
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
+        # Gradient checkpointing: recompute activations during backward
+        # pass instead of storing them. Saves ~60% activation memory at
+        # the cost of ~30% more compute. Essential for e5-large +
+        # Matryoshka (6 forward passes per step) on T4 16GB.
+        gradient_checkpointing=True,
         # multilingual-e5-large requires specific prefixes per column
         prompts={
             "anchor": "query: ",
