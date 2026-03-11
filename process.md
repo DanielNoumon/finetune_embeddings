@@ -414,7 +414,7 @@ We use the **Stage 1 model itself** to mine hard negatives:
 **Why only 1 hard negative per query?**
 - 1 is the standard and most effective for MNRL
 - MNRL still uses in-batch negatives alongside the explicit hard negative
-- With batch 64: each query sees 1 hard negative + 63 in-batch negatives = 64 total negatives
+- With batch 16: each query sees 1 hard negative + 15 in-batch negatives = 16 total negatives
 - More hard negatives increase dataset size and training time without proportional benefit
 
 ### Output
@@ -451,7 +451,7 @@ When the training dataset has a `negative` column, MNRL automatically uses it:
 #   2. All other positives in the batch (in-batch negatives)
 ```
 
-With batch size 64, each query now sees: 1 explicit hard negative + ~63 in-batch negatives. The hard negative is weighted more heavily by the loss because it has a higher similarity score, forcing the model to learn the distinction.
+With batch size 16 (effective 64 via gradient accumulation), each query now sees: 1 explicit hard negative + ~15 in-batch negatives per micro-batch. The hard negative is weighted more heavily by the loss because it has a higher similarity score, forcing the model to learn the distinction.
 
 ### Training configuration — tuned for Stage 2
 
@@ -460,7 +460,7 @@ With batch size 64, each query now sees: 1 explicit hard negative + ~63 in-batch
 | **Base model** | `intfloat/multilingual-e5-large` | `models/stage_1_mnrl/final` | Continue from adapted checkpoint |
 | **Learning rate** | 2e-5 | **1e-5** | Lower — model is already fine-tuned, large updates risk catastrophic forgetting |
 | **Epochs** | 3 | **2** | Fewer — hard negatives provide stronger signal per step, more prone to overfitting |
-| **Batch size** | 64 | 64 | Same — fits on T4 with SDPA + grad checkpointing |
+| **Batch size** | 64 | **16 (×4 grad accum = 64 effective)** | Reduced — 3 columns × 6 Matryoshka dims OOMs at batch 32+; grad accum preserves effective batch |
 | **Matryoshka dims** | [1024..64] | [1024..64] | Same — maintain multi-dim compatibility |
 | **Loss** | MatryoshkaLoss(MNRL) | MatryoshkaLoss(MNRL) | Same structure — MNRL auto-detects the negative column |
 
@@ -477,3 +477,57 @@ python finetuning/stage_2_hard_neg/mine_negatives.py
 # Step 2: Fine-tune with hard negatives
 python finetuning/stage_2_hard_neg/finetune.py
 ```
+
+### Stage 2 Results
+
+Training completed in ~18 minutes on Colab T4 (batch 16 × 4 grad accum, SDPA + gradient checkpointing).
+
+**NDCG@10 across Matryoshka dimensions — full pipeline comparison:**
+
+| Dim | Base | Stage 1 | Stage 2 | Δ (Base→S2) | Δ (S1→S2) |
+|---|---|---|---|---|---|
+| 1024 | 0.8612 | 0.9426 | **0.9465** | +0.0853 | +0.0039 |
+| 768 | 0.8577 | 0.9411 | **0.9445** | +0.0868 | +0.0035 |
+| 512 | 0.8495 | 0.9379 | **0.9412** | +0.0917 | +0.0033 |
+| 256 | 0.7848 | 0.9383 | **0.9423** | +0.1575 | +0.0041 |
+| 128 | 0.7283 | 0.9225 | **0.9277** | +0.1994 | +0.0051 |
+| 64 | 0.6009 | 0.9011 | **0.9058** | +0.3049 | +0.0047 |
+
+**Full metrics at dim=1024 — full pipeline comparison:**
+
+| Metric | Base | Stage 1 | Stage 2 | Δ (Base→S2) | Δ (S1→S2) |
+|---|---|---|---|---|---|
+| NDCG@10 | 0.8612 | 0.9426 | **0.9465** | +0.0853 | +0.0039 |
+| MRR@10 | 0.8315 | 0.9272 | **0.9315** | +0.1000 | +0.0043 |
+| MAP@100 | 0.8336 | 0.9279 | **0.9319** | +0.0983 | +0.0041 |
+| Accuracy@1 | 0.7618 | 0.8853 | **0.8912** | +0.1294 | +0.0059 |
+| Accuracy@3 | — | 0.9706 | **0.9765** | — | +0.0059 |
+| Accuracy@5 | — | 0.9794 | **0.9824** | — | +0.0029 |
+| Accuracy@10 | 0.9529 | 0.9882 | **0.9912** | +0.0383 | +0.0029 |
+| Recall@10 | 0.9529 | 0.9882 | **0.9912** | +0.0383 | +0.0029 |
+
+### Analysis
+
+**Stage 2 provided consistent gains across all dimensions and metrics.** Key observations:
+
+1. **Lower Matryoshka dims benefited most** from hard negatives (dim=128: +0.51%, dim=64: +0.47%). Hard negatives teach finer distinctions that are especially valuable when the model has fewer dimensions to work with.
+
+2. **Accuracy@1 improved by +0.59%** (88.53% → 89.12%) — the model became better at ranking the correct chunk first.
+
+3. **Recall@10 reached 99.12%** — near ceiling. The correct chunk is almost always in the top 10.
+
+4. **Matryoshka quality curve remains flat**: dim=64 retains 96% of dim=1024's quality (0.906 vs 0.947), consistent with Stage 1.
+
+5. **No regressions** — all dimensions improved, confirming the lower learning rate (1e-5) and fewer epochs (2) prevented catastrophic forgetting.
+
+6. **Total improvement from base**: NDCG@10 at dim=1024 went from 0.861 → 0.947 (+8.5 points). At dim=64: 0.601 → 0.906 (+30.5 points).
+
+### Model outputs
+
+```
+models/
+├── stage_1_mnrl/final/       # Stage 1: MNRL + Matryoshka on base model
+└── stage_2_hard_neg/final/   # Stage 2: MNRL + Matryoshka with hard negatives on Stage 1
+```
+
+The Stage 2 model at `models/stage_2_hard_neg/final/` is the final production model.
