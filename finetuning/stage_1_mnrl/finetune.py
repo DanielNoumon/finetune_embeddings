@@ -21,6 +21,7 @@ from pathlib import Path
 from datasets import load_from_disk
 from sentence_transformers import (
     SentenceTransformer,
+    SentenceTransformerModelCardData,
     SentenceTransformerTrainer,
     SentenceTransformerTrainingArguments,
 )
@@ -87,17 +88,19 @@ if __name__ == "__main__":
     #
     # BATCH_SIZE: Actual per-device batch size.
     # With MNRL, each sample gets (batch_size - 1) in-batch negatives.
-    # e5-large (560M) + Matryoshka (6 dims) needs smaller batch on T4.
-    # 32 fits on Colab T4 (16GB) with e5-large + fp16 + Matryoshka.
-    # For CPU/low-memory: reduce to 16 and set GRAD_ACCUM_STEPS=4.
-    BATCH_SIZE = 32
+    # IMPORTANT: only per-device batch size determines negatives, NOT
+    # gradient accumulation. Batch 64 → 63 negatives. Batch 32 → 31.
+    # 64 fits on Colab T4 (16GB) with e5-large + fp16 + SDPA attention.
+    # For CPU/low-memory: reduce to 16.
+    BATCH_SIZE = 64
 
     # GRAD_ACCUM_STEPS: Simulate larger effective batch by accumulating
     # gradients over multiple steps before updating weights.
-    # Effective batch size = BATCH_SIZE * GRAD_ACCUM_STEPS
-    # On Colab T4 with batch 32: use 2 → effective batch = 64 (63 negatives).
+    # NOTE: gradient accumulation does NOT increase in-batch negatives
+    # for MNRL — only the actual batch size matters for that.
+    # On Colab T4 with batch 64 + SDPA: set to 1 (no accumulation).
     # On CPU with batch 16: set to 4 → effective batch = 64.
-    GRAD_ACCUM_STEPS = 2
+    GRAD_ACCUM_STEPS = 1
 
     # NUM_EPOCHS: Number of passes through the training data.
     # Small dataset (1,944 pairs) → keep low to avoid overfitting.
@@ -144,11 +147,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--batch-size", type=int, default=BATCH_SIZE,
-        help="Per-device batch size (default: 32)"
+        help="Per-device batch size (default: 64)"
     )
     parser.add_argument(
         "--grad-accum", type=int, default=GRAD_ACCUM_STEPS,
-        help="Gradient accumulation steps (default: 2)"
+        help="Gradient accumulation steps (default: 1)"
     )
     parser.add_argument(
         "--epochs", type=int, default=NUM_EPOCHS,
@@ -182,7 +185,15 @@ if __name__ == "__main__":
     # 1. Load model
     # -------------------------------------------------------------------
     print(f"\nLoading model: {args.model}")
-    model = SentenceTransformer(args.model)
+    model = SentenceTransformer(
+        args.model,
+        model_kwargs={"attn_implementation": "sdpa"},
+        model_card_data=SentenceTransformerModelCardData(
+            language="nl",
+            license="apache-2.0",
+            model_name="multilingual-e5-large EU AI Act NL Matryoshka",
+        ),
+    )
 
     # -------------------------------------------------------------------
     # 2. Load training data
