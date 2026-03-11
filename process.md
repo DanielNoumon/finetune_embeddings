@@ -357,3 +357,123 @@ python finetuning/stage_1_mnrl/finetune.py
 # On CPU (laptop fallback) — smaller batch with gradient accumulation
 python finetuning/stage_1_mnrl/finetune.py --batch-size 16 --grad-accum 4
 ```
+
+### Stage 1 Results
+
+Training completed in ~14 minutes on Colab T4 (batch 64, SDPA + gradient checkpointing). Best checkpoint: epoch 2.
+
+**NDCG@10 across Matryoshka dimensions:**
+
+| Dim | Base | Stage 1 | Δ |
+|---|---|---|---|
+| 1024 | 0.8612 | 0.9436 | +0.0825 |
+| 768 | 0.8577 | 0.9381 | +0.0804 |
+| 512 | 0.8495 | 0.9352 | +0.0857 |
+| 256 | 0.7848 | 0.9380 | +0.1532 |
+| 128 | 0.7283 | 0.9236 | +0.1952 |
+| 64 | 0.6009 | 0.9029 | +0.3019 |
+
+**Full metrics at dim=1024:**
+
+| Metric | Base | Stage 1 | Δ |
+|---|---|---|---|
+| NDCG@10 | 0.8612 | 0.9436 | +0.0825 |
+| MRR@10 | 0.8315 | 0.9287 | +0.0972 |
+| MAP@100 | 0.8336 | 0.9293 | +0.0957 |
+| Accuracy@1 | 0.7618 | 0.8882 | +0.1265 |
+| Accuracy@10 | 0.9529 | 0.9882 | +0.0353 |
+| Recall@10 | 0.9529 | 0.9882 | +0.0353 |
+
+Key takeaway: Matryoshka training flattened the quality curve — dim=64 now retains 96% of dim=1024's quality (0.90 vs 0.94), compared to only 70% before fine-tuning (0.60 vs 0.86).
+
+---
+
+## Step 5 — Hard Negative Mining
+
+### Why hard negatives?
+
+Stage 1 used only **in-batch negatives** — random passages from the same batch. These are mostly "easy" negatives (clearly different topics). The model quickly learns to distinguish them, but may struggle with **confusing near-misses** — passages that are topically similar but answer a different question.
+
+Hard negatives are specifically chosen to be **similar but wrong**. They force the model to learn fine-grained distinctions, like telling apart two different articles about AI system obligations.
+
+### Mining strategy
+
+We use the **Stage 1 model itself** to mine hard negatives:
+
+1. Encode all training queries with the Stage 1 model
+2. Encode all training corpus chunks
+3. For each query, rank all chunks by cosine similarity
+4. Exclude the correct positive chunk
+5. Take the **top-1 most similar wrong chunk** as the hard negative
+
+**Why mine from Stage 1 (not the base model)?**
+- Stage 1 has learned task-specific similarity — its mistakes are more informative
+- A passage that fools the *adapted* model is a genuinely confusing case
+- Base model negatives would be too easy for the already-fine-tuned model
+
+**Why only 1 hard negative per query?**
+- 1 is the standard and most effective for MNRL
+- MNRL still uses in-batch negatives alongside the explicit hard negative
+- With batch 64: each query sees 1 hard negative + 63 in-batch negatives = 64 total negatives
+- More hard negatives increase dataset size and training time without proportional benefit
+
+### Output
+
+The mining script produces a new dataset with columns `(anchor, positive, negative)` — same row count as the Stage 1 training set (1,944 triplets).
+
+```bash
+# On Colab (uses Stage 1 model for encoding)
+python finetuning/stage_2_hard_neg/mine_negatives.py
+
+# Custom paths
+python finetuning/stage_2_hard_neg/mine_negatives.py \
+    --model models/stage_1_mnrl/final \
+    --train-dir data/processed/train \
+    --output-dir data/processed/train_hard_neg
+```
+
+---
+
+## Step 6 — Stage 2 Fine-tuning with Hard Negatives
+
+### Starting point: Stage 1 checkpoint
+
+Stage 2 continues training from the Stage 1 model — not from scratch. The model already has a strong retrieval foundation; Stage 2 refines its ability to distinguish between confusingly similar passages.
+
+### How MNRL handles hard negatives
+
+When the training dataset has a `negative` column, MNRL automatically uses it:
+
+```python
+# Stage 1 dataset: (anchor, positive) — MNRL uses in-batch negatives only
+# Stage 2 dataset: (anchor, positive, negative) — MNRL uses both:
+#   1. The explicit hard negative (mined)
+#   2. All other positives in the batch (in-batch negatives)
+```
+
+With batch size 64, each query now sees: 1 explicit hard negative + ~63 in-batch negatives. The hard negative is weighted more heavily by the loss because it has a higher similarity score, forcing the model to learn the distinction.
+
+### Training configuration — tuned for Stage 2
+
+| Parameter | Stage 1 | Stage 2 | Rationale |
+|---|---|---|---|
+| **Base model** | `intfloat/multilingual-e5-large` | `models/stage_1_mnrl/final` | Continue from adapted checkpoint |
+| **Learning rate** | 2e-5 | **1e-5** | Lower — model is already fine-tuned, large updates risk catastrophic forgetting |
+| **Epochs** | 3 | **2** | Fewer — hard negatives provide stronger signal per step, more prone to overfitting |
+| **Batch size** | 64 | 64 | Same — fits on T4 with SDPA + grad checkpointing |
+| **Matryoshka dims** | [1024..64] | [1024..64] | Same — maintain multi-dim compatibility |
+| **Loss** | MatryoshkaLoss(MNRL) | MatryoshkaLoss(MNRL) | Same structure — MNRL auto-detects the negative column |
+
+### Evaluation
+
+Same eval setup as Stage 1 — `SequentialEvaluator` with `InformationRetrievalEvaluator` per Matryoshka dimension, same eval dataset (340 queries, 85 chunks). This enables direct comparison of base → Stage 1 → Stage 2.
+
+### Running Stage 2
+
+```bash
+# Step 1: Mine hard negatives (requires Stage 1 model)
+python finetuning/stage_2_hard_neg/mine_negatives.py
+
+# Step 2: Fine-tune with hard negatives
+python finetuning/stage_2_hard_neg/finetune.py
+```
