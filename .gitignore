@@ -48,6 +48,7 @@ data/synthetic/*_backup_*.jsonl
 data/results/
 data/hf_dataset/
 data/hf_dataset.parquet
+data/processed/
 *.log
 
 # Jupyter

@@ -76,3 +76,75 @@ Hard negatives are mined later from the fine-tuned model checkpoint (Stage 2 tra
 ### Positive chunks use `chunks_without_context.jsonl`
 
 We train on raw chunks (no context header) so the model doesn't become dependent on seeing the prefix at inference time. The context-prefixed version is only used for retrieval comparison experiments.
+
+---
+
+## Step 3 — Dataset Preparation for Fine-tuning
+
+### Critical design choice: Chunk-level splitting
+
+**The problem:** Each chunk has ~4 queries pointing to it. If we randomly split query-chunk pairs, the same chunk could appear in both train and eval sets → **data leakage** → inflated eval metrics.
+
+**The solution:** Split by unique `chunk_id` first, then assign all queries for that chunk to the same split.
+
+```python
+# Split chunks (not pairs)
+chunk_ids = sorted(set(p["chunk_id"] for p in pairs))
+shuffle(chunk_ids)
+eval_chunk_ids = set(chunk_ids[:15%])  # 15% of chunks
+
+# All queries for a chunk stay together
+train_pairs = [p for p in pairs if p["chunk_id"] not in eval_chunk_ids]
+eval_pairs = [p for p in pairs if p["chunk_id"] in eval_chunk_ids]
+```
+
+**Result:** 0 chunk overlap between train/eval. The model never sees eval chunks during training.
+
+### Split statistics
+
+| | Pairs | Chunks | Avg queries/chunk |
+|---|---|---|---|
+| **Train** | 1,944 | 486 (85%) | 4.0 |
+| **Eval** | 340 | 85 (15%) | 4.0 |
+| **Total** | 2,284 | 571 | 4.0 |
+
+### Why different formats for train vs eval?
+
+**Train set** → HuggingFace Dataset (Arrow format)
+- **Purpose:** Feed batches to MNRL training loop
+- **Format:** Columnar Arrow files (`data-00000-of-00001.arrow`)
+- **Columns:** `anchor` (query), `positive` (chunk)
+- **Why Arrow?** Fast memory-mapped loading, zero-copy reads, native format for Sentence Transformers
+- **Files:**
+  - `data-00000-of-00001.arrow` — actual data (1,944 pairs)
+  - `state.json` — dataset state metadata (fingerprint, shard info)
+  - `dataset_info.json` — schema (column names, types)
+
+**Eval set** → InformationRetrievalEvaluator format
+- **Purpose:** Simulate retrieval task during training (compute MRR@10, NDCG@10, Recall@10)
+- **Format:** 3 JSON files
+  - `queries.json` — `{query_id: query_text}` (340 queries)
+  - `corpus.json` — `{chunk_id: chunk_text}` (85 unique chunks, deduplicated)
+  - `relevant_docs.json` — `{query_id: [chunk_id]}` (340 mappings)
+- **Why this format?** Sentence Transformers' `InformationRetrievalEvaluator` expects this structure:
+  1. Encode all queries
+  2. Encode all corpus chunks
+  3. For each query, rank all chunks by similarity
+  4. Check if correct chunk ranks high → compute retrieval metrics
+
+**Key insight:** Different tools expect different formats. We optimize for each use case:
+- Train → fast batch loading for gradient updates
+- Eval → retrieval simulation to measure search quality
+
+### Loading from HuggingFace
+
+The dataset preparation script loads directly from HuggingFace Hub (`danielnoumon/eu-ai-act-nl-queries`) instead of local JSONL files. This ensures:
+- Reproducibility (same dataset version across machines)
+- No need to regenerate synthetic queries locally
+- Easy sharing and versioning
+
+```bash
+uv run python finetuning/stage_1_mnrl/prepare_dataset.py
+```
+
+The script maps HF column names (`query`, `chunk`) to internal format (`anchor`, `positive`) and performs the chunk-level split.
