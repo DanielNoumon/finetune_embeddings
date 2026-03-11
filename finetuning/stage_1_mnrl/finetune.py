@@ -81,7 +81,7 @@ if __name__ == "__main__":
 
     # Output directory for the fine-tuned model
     DEFAULT_OUTPUT_DIR = (
-        PROJECT_ROOT / "models" / "multilingual-e5-large-ai-act-nl"
+        PROJECT_ROOT / "models" / "stage_1_mnrl"
     )
 
     # Training hyperparameters
