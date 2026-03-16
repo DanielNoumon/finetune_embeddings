@@ -59,3 +59,4 @@ data/processed/
 models/
 checkpoints/
 runs/
+MODEL_CARD.md
