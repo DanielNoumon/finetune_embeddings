@@ -9,5 +9,12 @@ dependencies = [
     "pymupdf>=1.27.1",
     "python-dotenv>=1.2.2",
     "sentence-transformers>=4.1.0",
-    "torch==2.5.1",
+    "torch>=2.6.0",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
