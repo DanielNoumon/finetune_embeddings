@@ -17,6 +17,9 @@ Key differences from Stage 1:
   - Learning rate: lower (1e-5) — already fine-tuned, smaller updates
   - Epochs: 2 — stronger signal needs fewer passes to avoid overfitting
   - Prompts: includes "negative" column prefix
+  - Supports --instruct flag for instruct-tuned models
+
+Designed for RTX 5090 (32GB VRAM).
 """
 
 import json
@@ -100,18 +103,15 @@ if __name__ == "__main__":
 
     # Training hyperparameters — tuned for Stage 2
     #
-    # BATCH_SIZE: Reduced from Stage 1's 64 to 16 because MNRL now
-    # processes 3 columns (anchor, positive, negative) instead of 2.
-    # With Matryoshka (6 dims), that's 18 forward passes per step
-    # vs 12 in Stage 1. Backward pass with gradient checkpointing
-    # recomputes activations, doubling peak memory — OOM at batch
-    # 32+. Each sample gets 15 in-batch negatives + 1 hard negative.
-    # The explicit hard negative compensates for fewer in-batch negs.
-    BATCH_SIZE = 16
+    # BATCH_SIZE: 3 columns (anchor, positive, negative) use more VRAM
+    # than Stage 1's 2 columns, but RTX 5090 (32GB) handles batch 64
+    # comfortably. Each sample gets 63 in-batch negatives + 1 hard
+    # negative. The hard negative is the primary differentiator vs S1.
+    BATCH_SIZE = 64
 
-    # Gradient accumulation 4 → effective batch 64 for weight updates.
-    # NOTE: only per-device batch (16) determines in-batch negatives.
-    GRAD_ACCUM_STEPS = 4
+    # Gradient accumulation: not needed on RTX 5090 (32GB VRAM).
+    # NOTE: only per-device batch size determines in-batch negatives.
+    GRAD_ACCUM_STEPS = 1
 
     # NUM_EPOCHS: Fewer than Stage 1. Hard negatives provide a
     # stronger training signal — the model learns faster per step
@@ -129,6 +129,15 @@ if __name__ == "__main__":
 
     # Same Matryoshka dimensions as Stage 1
     MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
+
+    # INSTRUCT_PREFIX: Instruction prefix for query-side when using
+    # instruct-tuned models (e.g. multilingual-e5-large-instruct).
+    # Passages do not get a prefix for instruct models.
+    # Toggle via --instruct flag.
+    INSTRUCT_PREFIX = (
+        "Instruct: Given a question about EU AI regulation, "
+        "retrieve the most relevant passage\nQuery: "
+    )
 
     # -------------------------------------------------------------------
 
@@ -167,14 +176,34 @@ if __name__ == "__main__":
         "--lr", type=float, default=LEARNING_RATE,
         help="Learning rate (default: 1e-5)"
     )
+    parser.add_argument(
+        "--instruct", action="store_true",
+        help=(
+            "Use instruction prefix for queries (for instruct-tuned "
+            "models). Also pass --model <stage1-instruct-path>."
+        )
+    )
     args = parser.parse_args()
+
+    # Build prefix strings based on model type
+    if args.instruct:
+        query_prompt = INSTRUCT_PREFIX
+        corpus_prompt = ""
+    else:
+        query_prompt = "query: "
+        corpus_prompt = "passage: "
 
     # -------------------------------------------------------------------
     # Device detection
     # -------------------------------------------------------------------
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    use_fp16 = device == "cuda"
+    use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
+    use_fp16 = device == "cuda" and not use_bf16
     print(f"Device: {device}")
+    print(
+        f"Prefix mode: "
+        f"{'instruct' if args.instruct else 'standard (query/passage)'}"
+    )
     if device == "cpu":
         print("  Training on CPU — this will be slow.")
     else:
@@ -245,8 +274,8 @@ if __name__ == "__main__":
                 relevant_docs=relevant_docs,
                 name=f"eu-ai-act-nl-dim{dim}",
                 truncate_dim=dim,
-                query_prompt="query: ",
-                corpus_prompt="passage: ",
+                query_prompt=query_prompt,
+                corpus_prompt=corpus_prompt,
                 show_progress_bar=True,
             )
         )
@@ -290,12 +319,12 @@ if __name__ == "__main__":
         warmup_ratio=WARMUP_RATIO,
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
-        gradient_checkpointing=True,
-        # Prefixes for all three columns
+        bf16=use_bf16,
+        gradient_checkpointing=False,
         prompts={
-            "anchor": "query: ",
-            "positive": "passage: ",
-            "negative": "passage: ",
+            "anchor": query_prompt,
+            "positive": corpus_prompt,
+            "negative": corpus_prompt,
         },
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         # Evaluation and saving

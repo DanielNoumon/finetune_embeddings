@@ -7,11 +7,11 @@ useful embeddings at multiple dimensionalities (1024, 768, 512, 256,
 128, 64). At inference time, you can truncate embeddings to any of
 these sizes for a speed/quality tradeoff — no retraining needed.
 
-Handles multilingual-e5-large prefix requirements:
-  - queries  → "query: " prefix
-  - passages → "passage: " prefix
+Supports two prefix modes (toggle with --instruct):
+  - default:  queries → "query: ", passages → "passage: "
+  - instruct: queries → instruction prefix, passages → no prefix
 
-Designed for Google Colab (T4 GPU, 16GB VRAM).
+Designed for RTX 5090 (32GB VRAM).
 Also works on CPU (slower) — auto-detects device.
 """
 
@@ -71,8 +71,8 @@ if __name__ == "__main__":
     # Base model to fine-tune.
     # multilingual-e5-large: 560M params, supports 100+ languages
     # including Dutch. Stronger than e5-base on MTEB multilingual
-    # benchmarks. Fits on Colab T4 (16GB) with batch 64 + fp16.
-    # Requires "query: " and "passage: " prefixes.
+    # benchmarks. Fits on RTX 5090 (32GB) with batch 128 + bf16.
+    # Use --instruct flag with multilingual-e5-large-instruct.
     MODEL_NAME = "intfloat/multilingual-e5-large"
 
     # Input directories (output of prepare_dataset.py)
@@ -89,16 +89,16 @@ if __name__ == "__main__":
     # BATCH_SIZE: Actual per-device batch size.
     # With MNRL, each sample gets (batch_size - 1) in-batch negatives.
     # IMPORTANT: only per-device batch size determines negatives, NOT
-    # gradient accumulation. Batch 64 → 63 negatives. Batch 32 → 31.
-    # 64 fits on Colab T4 (16GB) with e5-large + fp16 + SDPA attention.
+    # gradient accumulation. Batch 128 → 127 negatives.
+    # 128 fits on RTX 5090 (32GB) with e5-large + bf16 + SDPA attention.
     # For CPU/low-memory: reduce to 16.
-    BATCH_SIZE = 64
+    BATCH_SIZE = 128
 
     # GRAD_ACCUM_STEPS: Simulate larger effective batch by accumulating
     # gradients over multiple steps before updating weights.
     # NOTE: gradient accumulation does NOT increase in-batch negatives
     # for MNRL — only the actual batch size matters for that.
-    # On Colab T4 with batch 64 + SDPA: set to 1 (no accumulation).
+    # On RTX 5090 with batch 128: set to 1 (no accumulation needed).
     # On CPU with batch 16: set to 4 → effective batch = 64.
     GRAD_ACCUM_STEPS = 1
 
@@ -123,6 +123,15 @@ if __name__ == "__main__":
     # 64   = smallest (fastest retrieval, ~16x less storage than 1024).
     # At inference: model.encode(..., output_dimensionality=256)
     MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
+
+    # INSTRUCT_PREFIX: Instruction prefix for query-side when using
+    # instruct-tuned models (e.g. multilingual-e5-large-instruct).
+    # Passages do not get a prefix for instruct models.
+    # Toggle via --instruct flag.
+    INSTRUCT_PREFIX = (
+        "Instruct: Given a question about EU AI regulation, "
+        "retrieve the most relevant passage\nQuery: "
+    )
 
     # -------------------------------------------------------------------
 
@@ -161,14 +170,31 @@ if __name__ == "__main__":
         "--lr", type=float, default=LEARNING_RATE,
         help="Learning rate (default: 2e-5)"
     )
+    parser.add_argument(
+        "--instruct", action="store_true",
+        help=(
+            "Use instruction prefix for queries (for instruct-tuned "
+            "models). Also pass --model intfloat/multilingual-e5-large-instruct."
+        )
+    )
     args = parser.parse_args()
+
+    # Build prefix strings based on model type
+    if args.instruct:
+        query_prompt = INSTRUCT_PREFIX
+        corpus_prompt = ""
+    else:
+        query_prompt = "query: "
+        corpus_prompt = "passage: "
 
     # -------------------------------------------------------------------
     # Device detection
     # -------------------------------------------------------------------
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    use_fp16 = device == "cuda"
+    use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
+    use_fp16 = device == "cuda" and not use_bf16
     print(f"Device: {device}")
+    print(f"Prefix mode: {'instruct' if args.instruct else 'standard (query/passage)'}")
     if device == "cpu":
         print("  Training on CPU — this will be slow (~2-4 hours).")
         print("  Consider using a cloud GPU for faster training.")
@@ -225,8 +251,8 @@ if __name__ == "__main__":
                 relevant_docs=relevant_docs,
                 name=f"eu-ai-act-nl-dim{dim}",
                 truncate_dim=dim,
-                query_prompt="query: ",
-                corpus_prompt="passage: ",
+                query_prompt=query_prompt,
+                corpus_prompt=corpus_prompt,
                 show_progress_bar=True,
             )
         )
@@ -268,15 +294,11 @@ if __name__ == "__main__":
         warmup_ratio=WARMUP_RATIO,
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
-        # Gradient checkpointing: recompute activations during backward
-        # pass instead of storing them. Saves ~60% activation memory at
-        # the cost of ~30% more compute. Essential for e5-large +
-        # Matryoshka (6 forward passes per step) on T4 16GB.
-        gradient_checkpointing=True,
-        # multilingual-e5-large requires specific prefixes per column
+        bf16=use_bf16,
+        gradient_checkpointing=False,
         prompts={
-            "anchor": "query: ",
-            "positive": "passage: ",
+            "anchor": query_prompt,
+            "positive": corpus_prompt,
         },
         # MNRL benefits from no duplicate samples in a batch
         batch_sampler=BatchSamplers.NO_DUPLICATES,
