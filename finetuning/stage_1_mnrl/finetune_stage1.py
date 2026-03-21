@@ -227,8 +227,8 @@ if __name__ == "__main__":
     BATCH_SIZE      = 128
     GRAD_ACCUM      = 1
     EPOCHS          = 3
-    LR              = 2e-5
-    WARMUP_RATIO    = 0.1
+    LR              = 5e-6
+    WARMUP_STEPS    = 5
     WEIGHT_DECAY    = 0.01
     MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
 
@@ -275,7 +275,7 @@ if __name__ == "__main__":
         per_device_eval_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
-        warmup_ratio=WARMUP_RATIO,
+        warmup_steps=WARMUP_STEPS,
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
         bf16=use_bf16,
