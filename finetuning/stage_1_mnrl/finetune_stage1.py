@@ -88,9 +88,10 @@ def build_prompts(instruct, instruct_prefix):
     return "query: ", "passage: "
 
 
-def load_model(model_name):
+def load_model(model_name, instruct=False):
     """Load SentenceTransformer with SDPA attention."""
     print(f"\nLoading model: {model_name}")
+    model_variant = "Instruct" if instruct else "Standard"
     return SentenceTransformer(
         model_name,
         model_kwargs={"attn_implementation": "sdpa"},
@@ -98,7 +99,7 @@ def load_model(model_name):
             language="nl",
             license="apache-2.0",
             model_name=(
-                "multilingual-e5-large EU AI Act NL Matryoshka"
+                f"multilingual-e5-large {model_variant} EU AI Act NL Matryoshka"
             ),
         ),
     )
@@ -213,7 +214,7 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------
     PROJECT_ROOT    = Path(__file__).resolve().parent.parent.parent
 
-    MODEL_NAME      = "intfloat/multilingual-e5-large"
+    MODEL_NAME      = "intfloat/multilingual-e5-large-instruct"
     TRAIN_DIR       = PROJECT_ROOT / "data" / "processed" / "train"
     EVAL_DIR        = PROJECT_ROOT / "data" / "processed" / "eval"
     OUTPUT_DIR      = PROJECT_ROOT / "models" / "stage_1_mnrl"
@@ -240,7 +241,7 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------
     # Load model & data
     # -------------------------------------------------------------------
-    model = load_model(MODEL_NAME)
+    model = load_model(MODEL_NAME, instruct=INSTRUCT)
 
     train_dataset = load_from_disk(str(TRAIN_DIR))
     print(f"Train samples: {len(train_dataset)}")
