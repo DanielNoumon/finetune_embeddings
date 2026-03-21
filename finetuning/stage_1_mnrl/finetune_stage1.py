@@ -224,8 +224,8 @@ if __name__ == "__main__":
         "retrieve the most relevant passage\nQuery: "
     )
 
-    BATCH_SIZE      = 32
-    GRAD_ACCUM      = 4
+    BATCH_SIZE      = 128
+    GRAD_ACCUM      = 1
     EPOCHS          = 3
     LR              = 2e-5
     WARMUP_RATIO    = 0.1
@@ -279,7 +279,7 @@ if __name__ == "__main__":
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
         bf16=use_bf16,
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,
         prompts={
             "anchor": query_prompt,
             "positive": corpus_prompt,
