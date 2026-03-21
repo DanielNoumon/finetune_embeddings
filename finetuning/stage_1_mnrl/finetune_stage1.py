@@ -226,8 +226,8 @@ if __name__ == "__main__":
         "retrieve the most relevant passage\nQuery: "
     )
 
-    BATCH_SIZE      = 32
-    GRAD_ACCUM      = 4
+    BATCH_SIZE      = 16
+    GRAD_ACCUM      = 8
     EPOCHS          = 3
     LR              = 5e-6
     WARMUP_STEPS    = 5
