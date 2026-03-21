@@ -32,10 +32,7 @@ from sentence_transformers import (
     SentenceTransformerTrainer,
     SentenceTransformerTrainingArguments,
 )
-from sentence_transformers.losses import (
-    MatryoshkaLoss,
-    MultipleNegativesRankingLoss,
-)
+from sentence_transformers.losses import MultipleNegativesRankingLoss
 from sentence_transformers.training_args import BatchSamplers
 from sentence_transformers.evaluation import (
     InformationRetrievalEvaluator,
@@ -147,12 +144,9 @@ def build_evaluators(
     return eval_suite, primary_metric
 
 
-def build_loss(model, matryoshka_dims):
-    """Build MatryoshkaLoss wrapping MNRL."""
-    inner_loss = MultipleNegativesRankingLoss(model)
-    return MatryoshkaLoss(
-        model, inner_loss, matryoshka_dims=matryoshka_dims
-    )
+def build_loss(model):
+    """Build plain MNRL loss (no Matryoshka)."""
+    return MultipleNegativesRankingLoss(model)
 
 
 def print_summary(
@@ -231,17 +225,18 @@ if __name__ == "__main__":
     TRAIN_DIR       = PROJECT_ROOT / "data" / "processed" / "train_hard_neg"
     EVAL_DIR        = PROJECT_ROOT / "data" / "processed" / "eval"
     OUTPUT_DIR      = PROJECT_ROOT / "models" / "stage_2_hard_neg"
-    INSTRUCT        = False
+    INSTRUCT        = True
     INSTRUCT_PREFIX = (
         "Instruct: Given a question about EU AI regulation, "
         "retrieve the most relevant passage\nQuery: "
     )
 
-    BATCH_SIZE      = 64
-    GRAD_ACCUM      = 1
-    EPOCHS          = 2
-    LR              = 1e-5
-    WARMUP_RATIO    = 0.1
+    BATCH_SIZE      = 16
+    GRAD_ACCUM      = 8
+    EPOCHS          = 3
+    LR              = 1e-6
+    WARMUP_STEPS    = 3
+    MAX_GRAD_NORM   = 0.3
     WEIGHT_DECAY    = 0.01
     MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
 
@@ -290,7 +285,7 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------
     # Train
     # -------------------------------------------------------------------
-    loss = build_loss(model, MATRYOSHKA_DIMS)
+    loss = build_loss(model)
 
     training_args = SentenceTransformerTrainingArguments(
         output_dir=str(OUTPUT_DIR),
@@ -299,7 +294,8 @@ if __name__ == "__main__":
         per_device_eval_batch_size=BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
-        warmup_ratio=WARMUP_RATIO,
+        warmup_steps=WARMUP_STEPS,
+        max_grad_norm=MAX_GRAD_NORM,
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
         bf16=use_bf16,

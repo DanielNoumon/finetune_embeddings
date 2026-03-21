@@ -27,6 +27,8 @@ from sentence_transformers import SentenceTransformer
 def mine_hard_negatives(
     model: SentenceTransformer,
     train_dataset: Dataset,
+    query_prompt: str = "query: ",
+    corpus_prompt: str = "passage: ",
     n_negatives: int = 1,
     batch_size: int = 64,
 ) -> Dataset:
@@ -64,7 +66,7 @@ def mine_hard_negatives(
     print(f"  Encoding {len(anchors)} queries...")
     query_embeddings = model.encode(
         anchors,
-        prompt="query: ",
+        prompt=query_prompt,
         batch_size=batch_size,
         show_progress_bar=True,
         convert_to_numpy=True,
@@ -74,7 +76,7 @@ def mine_hard_negatives(
     print(f"  Encoding {len(unique_positives)} corpus chunks...")
     corpus_embeddings = model.encode(
         unique_positives,
-        prompt="passage: ",
+        prompt=corpus_prompt,
         batch_size=batch_size,
         show_progress_bar=True,
         convert_to_numpy=True,
@@ -136,6 +138,11 @@ if __name__ == "__main__":
     OUTPUT_DIR   = PROJECT_ROOT / "data" / "processed" / "train_hard_neg"
     N_NEGATIVES  = 1
     BATCH_SIZE   = 64
+    INSTRUCT     = True
+    INSTRUCT_PREFIX = (
+        "Instruct: Given a question about EU AI regulation, "
+        "retrieve the most relevant passage\nQuery: "
+    )
 
     # -------------------------------------------------------------------
     # Pipeline
@@ -152,8 +159,15 @@ if __name__ == "__main__":
     print(f"\nLoading Stage 1 model: {MODEL_NAME}")
     model = SentenceTransformer(
         MODEL_NAME,
-        model_kwargs={"attn_implementation": "sdpa"},
+        model_kwargs={"attn_implementation": "eager"},
     )
+
+    if INSTRUCT:
+        query_prompt = INSTRUCT_PREFIX
+        corpus_prompt = ""
+    else:
+        query_prompt = "query: "
+        corpus_prompt = "passage: "
 
     print(f"Loading train dataset from: {TRAIN_DIR}")
     train_dataset = load_from_disk(str(TRAIN_DIR))
@@ -163,6 +177,8 @@ if __name__ == "__main__":
     hard_neg_dataset = mine_hard_negatives(
         model=model,
         train_dataset=train_dataset,
+        query_prompt=query_prompt,
+        corpus_prompt=corpus_prompt,
         n_negatives=N_NEGATIVES,
         batch_size=BATCH_SIZE,
     )
