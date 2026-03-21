@@ -25,10 +25,7 @@ from sentence_transformers import (
     SentenceTransformerTrainer,
     SentenceTransformerTrainingArguments,
 )
-from sentence_transformers.losses import (
-    MatryoshkaLoss,
-    MultipleNegativesRankingLoss,
-)
+from sentence_transformers.losses import MultipleNegativesRankingLoss
 from sentence_transformers.training_args import BatchSamplers
 from sentence_transformers.evaluation import (
     InformationRetrievalEvaluator,
@@ -136,12 +133,9 @@ def build_evaluators(
     return eval_suite, primary_metric
 
 
-def build_loss(model, matryoshka_dims):
-    """Build MatryoshkaLoss wrapping MNRL."""
-    inner_loss = MultipleNegativesRankingLoss(model)
-    return MatryoshkaLoss(
-        model, inner_loss, matryoshka_dims=matryoshka_dims
-    )
+def build_loss(model):
+    """Build plain MNRL loss (no Matryoshka)."""
+    return MultipleNegativesRankingLoss(model)
 
 
 def print_summary(
@@ -268,7 +262,7 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------
     # Train
     # -------------------------------------------------------------------
-    loss = build_loss(model, MATRYOSHKA_DIMS)
+    loss = build_loss(model)
 
     training_args = SentenceTransformerTrainingArguments(
         output_dir=str(OUTPUT_DIR),
