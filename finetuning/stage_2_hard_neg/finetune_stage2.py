@@ -234,8 +234,8 @@ if __name__ == "__main__":
     BATCH_SIZE      = 8
     GRAD_ACCUM      = 16
     EVAL_BATCH_SIZE = 4
-    EPOCHS          = 3
-    LR              = 1e-6
+    EPOCHS          = 1
+    LR              = 5e-7
     WARMUP_STEPS    = 3
     MAX_GRAD_NORM   = 0.3
     WEIGHT_DECAY    = 0.01
