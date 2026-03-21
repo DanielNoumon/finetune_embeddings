@@ -231,8 +231,9 @@ if __name__ == "__main__":
         "retrieve the most relevant passage\nQuery: "
     )
 
-    BATCH_SIZE      = 16
-    GRAD_ACCUM      = 8
+    BATCH_SIZE      = 8
+    GRAD_ACCUM      = 16
+    EVAL_BATCH_SIZE = 4
     EPOCHS          = 3
     LR              = 1e-6
     WARMUP_STEPS    = 3
@@ -291,7 +292,7 @@ if __name__ == "__main__":
         output_dir=str(OUTPUT_DIR),
         num_train_epochs=EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
-        per_device_eval_batch_size=BATCH_SIZE,
+        per_device_eval_batch_size=EVAL_BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
         warmup_steps=WARMUP_STEPS,
