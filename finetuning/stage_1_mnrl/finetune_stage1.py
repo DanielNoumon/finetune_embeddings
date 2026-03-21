@@ -222,7 +222,7 @@ if __name__ == "__main__":
 
     BATCH_SIZE      = 16
     GRAD_ACCUM      = 8
-    EPOCHS          = 1
+    EPOCHS          = 3
     LR              = 1e-6
     WARMUP_STEPS    = 3
     MAX_GRAD_NORM   = 0.3
