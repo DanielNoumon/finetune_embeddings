@@ -7,7 +7,7 @@ useful embeddings at multiple dimensionalities (1024, 768, 512, 256,
 128, 64). At inference time, you can truncate embeddings to any of
 these sizes for a speed/quality tradeoff — no retraining needed.
 
-Supports two prefix modes (toggle with --instruct):
+Supports two prefix modes (toggle INSTRUCT in config):
   - default:  queries → "query: ", passages → "passage: "
   - instruct: queries → instruction prefix, passages → no prefix
 
@@ -59,191 +59,67 @@ def load_eval_data(
     return queries, corpus, relevant_docs
 
 
-if __name__ == "__main__":
-    import argparse
+INSTRUCT_PREFIX = (
+    "Instruct: Given a question about EU AI regulation, "
+    "retrieve the most relevant passage\nQuery: "
+)
 
-    # -------------------------------------------------------------------
-    # CONFIG
-    # -------------------------------------------------------------------
 
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+def detect_device():
+    """Detect compute device and precision support.
 
-    # Base model to fine-tune.
-    # multilingual-e5-large: 560M params, supports 100+ languages
-    # including Dutch. Stronger than e5-base on MTEB multilingual
-    # benchmarks. Fits on RTX 5090 (32GB) with batch 128 + bf16.
-    # Use --instruct flag with multilingual-e5-large-instruct.
-    MODEL_NAME = "intfloat/multilingual-e5-large"
-
-    # Input directories (output of prepare_dataset.py)
-    DEFAULT_TRAIN_DIR = PROJECT_ROOT / "data" / "processed" / "train"
-    DEFAULT_EVAL_DIR = PROJECT_ROOT / "data" / "processed" / "eval"
-
-    # Output directory for the fine-tuned model
-    DEFAULT_OUTPUT_DIR = (
-        PROJECT_ROOT / "models" / "stage_1_mnrl"
-    )
-
-    # Training hyperparameters
-    #
-    # BATCH_SIZE: Actual per-device batch size.
-    # With MNRL, each sample gets (batch_size - 1) in-batch negatives.
-    # IMPORTANT: only per-device batch size determines negatives, NOT
-    # gradient accumulation. Batch 128 → 127 negatives.
-    # 128 fits on RTX 5090 (32GB) with e5-large + bf16 + SDPA attention.
-    # For CPU/low-memory: reduce to 16.
-    BATCH_SIZE = 128
-
-    # GRAD_ACCUM_STEPS: Simulate larger effective batch by accumulating
-    # gradients over multiple steps before updating weights.
-    # NOTE: gradient accumulation does NOT increase in-batch negatives
-    # for MNRL — only the actual batch size matters for that.
-    # On RTX 5090 with batch 128: set to 1 (no accumulation needed).
-    # On CPU with batch 16: set to 4 → effective batch = 64.
-    GRAD_ACCUM_STEPS = 1
-
-    # NUM_EPOCHS: Number of passes through the training data.
-    # Small dataset (1,944 pairs) → keep low to avoid overfitting.
-    NUM_EPOCHS = 3
-
-    # LEARNING_RATE: Peak learning rate after warmup.
-    # 2e-5 is standard for fine-tuning transformers.
-    LEARNING_RATE = 2e-5
-
-    # WARMUP_RATIO: Fraction of total steps for linear LR warmup.
-    # 0.1 = gradual ramp-up over first 10% of training.
-    WARMUP_RATIO = 0.1
-
-    # WEIGHT_DECAY: L2 regularization to prevent overfitting.
-    WEIGHT_DECAY = 0.01
-
-    # MATRYOSHKA_DIMS: Dimensionalities to train Matryoshka embeddings
-    # for. The model learns useful embeddings at each truncation point.
-    # 1024 = full e5-large dimensionality (highest quality).
-    # 64   = smallest (fastest retrieval, ~16x less storage than 1024).
-    # At inference: model.encode(..., output_dimensionality=256)
-    MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
-
-    # INSTRUCT_PREFIX: Instruction prefix for query-side when using
-    # instruct-tuned models (e.g. multilingual-e5-large-instruct).
-    # Passages do not get a prefix for instruct models.
-    # Toggle via --instruct flag.
-    INSTRUCT_PREFIX = (
-        "Instruct: Given a question about EU AI regulation, "
-        "retrieve the most relevant passage\nQuery: "
-    )
-
-    # -------------------------------------------------------------------
-
-    parser = argparse.ArgumentParser(
-        description="Fine-tune embedding model with MNRL"
-    )
-    parser.add_argument(
-        "--model", type=str, default=MODEL_NAME,
-        help="Base model name or path"
-    )
-    parser.add_argument(
-        "--train-dir", type=str, default=str(DEFAULT_TRAIN_DIR),
-        help="Train dataset directory"
-    )
-    parser.add_argument(
-        "--eval-dir", type=str, default=str(DEFAULT_EVAL_DIR),
-        help="Eval data directory"
-    )
-    parser.add_argument(
-        "--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR),
-        help="Output directory for fine-tuned model"
-    )
-    parser.add_argument(
-        "--batch-size", type=int, default=BATCH_SIZE,
-        help="Per-device batch size (default: 64)"
-    )
-    parser.add_argument(
-        "--grad-accum", type=int, default=GRAD_ACCUM_STEPS,
-        help="Gradient accumulation steps (default: 1)"
-    )
-    parser.add_argument(
-        "--epochs", type=int, default=NUM_EPOCHS,
-        help="Number of training epochs (default: 3)"
-    )
-    parser.add_argument(
-        "--lr", type=float, default=LEARNING_RATE,
-        help="Learning rate (default: 2e-5)"
-    )
-    parser.add_argument(
-        "--instruct", action="store_true",
-        help=(
-            "Use instruction prefix for queries (for instruct-tuned "
-            "models). Also pass --model intfloat/multilingual-e5-large-instruct."
-        )
-    )
-    args = parser.parse_args()
-
-    # Build prefix strings based on model type
-    if args.instruct:
-        query_prompt = INSTRUCT_PREFIX
-        corpus_prompt = ""
-    else:
-        query_prompt = "query: "
-        corpus_prompt = "passage: "
-
-    # -------------------------------------------------------------------
-    # Device detection
-    # -------------------------------------------------------------------
+    Returns (device, use_fp16, use_bf16).
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
     use_fp16 = device == "cuda" and not use_bf16
     print(f"Device: {device}")
-    print(f"Prefix mode: {'instruct' if args.instruct else 'standard (query/passage)'}")
     if device == "cpu":
-        print("  Training on CPU — this will be slow (~2-4 hours).")
-        print("  Consider using a cloud GPU for faster training.")
+        print("  Training on CPU \u2014 this will be slow (~2-4 hours).")
+        print("  Consider using a GPU for faster training.")
     else:
         gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+        gpu_mem = (
+            torch.cuda.get_device_properties(0).total_memory / 1e9
+        )
         print(f"  GPU: {gpu_name} ({gpu_mem:.1f} GB)")
+        print(f"  Precision: {'bf16' if use_bf16 else 'fp16'}")
+    return device, use_fp16, use_bf16
 
-    effective_batch = args.batch_size * args.grad_accum
-    print(f"Effective batch size: {args.batch_size} x {args.grad_accum} "
-          f"= {effective_batch}")
 
-    # -------------------------------------------------------------------
-    # 1. Load model
-    # -------------------------------------------------------------------
-    print(f"\nLoading model: {args.model}")
-    model = SentenceTransformer(
-        args.model,
+def build_prompts(instruct):
+    """Return (query_prompt, corpus_prompt) based on model type."""
+    if instruct:
+        return INSTRUCT_PREFIX, ""
+    return "query: ", "passage: "
+
+
+def load_model(model_name):
+    """Load SentenceTransformer with SDPA attention."""
+    print(f"\nLoading model: {model_name}")
+    return SentenceTransformer(
+        model_name,
         model_kwargs={"attn_implementation": "sdpa"},
         model_card_data=SentenceTransformerModelCardData(
             language="nl",
             license="apache-2.0",
-            model_name="multilingual-e5-large EU AI Act NL Matryoshka",
+            model_name=(
+                "multilingual-e5-large EU AI Act NL Matryoshka"
+            ),
         ),
     )
 
-    # -------------------------------------------------------------------
-    # 2. Load training data
-    # -------------------------------------------------------------------
-    train_dir = Path(args.train_dir)
-    print(f"Loading train dataset from: {train_dir}")
-    train_dataset = load_from_disk(str(train_dir))
-    print(f"  Train samples: {len(train_dataset)}")
 
-    # -------------------------------------------------------------------
-    # 3. Load eval data & build evaluator
-    # -------------------------------------------------------------------
-    eval_dir = Path(args.eval_dir)
-    print(f"Loading eval data from: {eval_dir}")
-    queries, corpus, relevant_docs = load_eval_data(eval_dir)
-    print(f"  Eval queries: {len(queries)}")
-    print(f"  Eval corpus:  {len(corpus)}")
+def build_evaluators(
+    queries, corpus, relevant_docs, matryoshka_dims,
+    query_prompt, corpus_prompt,
+):
+    """Build SequentialEvaluator with one IR evaluator per dim.
 
-    # Build one IR evaluator per Matryoshka dimension.
-    # During training, each evaluator measures retrieval quality at
-    # that truncated dimensionality, so we can track quality/size
-    # tradeoffs across epochs.
+    Returns (eval_suite, primary_metric).
+    """
     evaluators = []
-    for dim in MATRYOSHKA_DIMS:
+    for dim in matryoshka_dims:
         evaluators.append(
             InformationRetrievalEvaluator(
                 queries=queries,
@@ -257,113 +133,46 @@ if __name__ == "__main__":
             )
         )
     eval_suite = SequentialEvaluator(evaluators)
+    primary_metric = (
+        f"eu-ai-act-nl-dim{matryoshka_dims[0]}_cosine_ndcg@10"
+    )
+    return eval_suite, primary_metric
 
-    # Primary metric for best-model selection uses full 1024-dim
-    primary_metric = "eu-ai-act-nl-dim1024_cosine_ndcg@10"
 
-    # Evaluate base model before training
-    print("\nEvaluating base model at all Matryoshka dims...")
-    base_results = eval_suite(model)
-    for dim in MATRYOSHKA_DIMS:
-        key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
-        print(f"  Base NDCG@10 (dim={dim}): {base_results[key]:.4f}")
-
-    # -------------------------------------------------------------------
-    # 4. Define loss — Matryoshka wrapping MNRL
-    # -------------------------------------------------------------------
-    # MatryoshkaLoss trains the inner MNRL loss at each dimension.
-    # The model learns that the first N dims of the embedding are
-    # independently useful for retrieval at each truncation point.
+def build_loss(model, matryoshka_dims):
+    """Build MatryoshkaLoss wrapping MNRL."""
     inner_loss = MultipleNegativesRankingLoss(model)
-    loss = MatryoshkaLoss(
-        model, inner_loss, matryoshka_dims=MATRYOSHKA_DIMS
+    return MatryoshkaLoss(
+        model, inner_loss, matryoshka_dims=matryoshka_dims
     )
 
-    # -------------------------------------------------------------------
-    # 5. Training arguments
-    # -------------------------------------------------------------------
-    output_dir = Path(args.output_dir)
 
-    training_args = SentenceTransformerTrainingArguments(
-        output_dir=str(output_dir),
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        learning_rate=args.lr,
-        warmup_ratio=WARMUP_RATIO,
-        weight_decay=WEIGHT_DECAY,
-        fp16=use_fp16,
-        bf16=use_bf16,
-        gradient_checkpointing=False,
-        prompts={
-            "anchor": query_prompt,
-            "positive": corpus_prompt,
-        },
-        # MNRL benefits from no duplicate samples in a batch
-        batch_sampler=BatchSamplers.NO_DUPLICATES,
-        # Evaluation and saving
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        save_total_limit=2,
-        load_best_model_at_end=True,
-        metric_for_best_model=primary_metric,
-        # Logging — loss is logged every N steps.
-        # With 1,944 train samples / batch 64 = ~30 steps/epoch.
-        # logging_steps=5 gives ~6 log points per epoch (good granularity).
-        logging_steps=5,
-        logging_first_step=True,
-        run_name="e5-large-ai-act-nl-mnrl",
-        # TensorBoard logging for loss curves.
-        # In Colab: %load_ext tensorboard; %tensorboard --logdir runs/
-        report_to="tensorboard",
-    )
-
-    # -------------------------------------------------------------------
-    # 6. Train
-    # -------------------------------------------------------------------
-    trainer = SentenceTransformerTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        loss=loss,
-        evaluator=eval_suite,
-    )
-
-    print(f"\nStarting training for {args.epochs} epochs...")
-    print(f"  Steps per epoch: ~{len(train_dataset) // effective_batch}")
-    print(f"  Total steps:     ~{len(train_dataset) // effective_batch * args.epochs}")
-    trainer.train()
-
-    # -------------------------------------------------------------------
-    # 7. Final evaluation at all Matryoshka dimensions
-    # -------------------------------------------------------------------
-    print("\nEvaluating fine-tuned model at all Matryoshka dims...")
-    final_results = eval_suite(model)
-
-    # -------------------------------------------------------------------
-    # 8. Save
-    # -------------------------------------------------------------------
-    final_path = output_dir / "final"
-    model.save_pretrained(str(final_path))
-    print(f"\nModel saved to: {final_path}")
-
-    # Print summary — NDCG@10 across all Matryoshka dimensions
+def print_summary(
+    base_results, final_results, matryoshka_dims,
+    base_label="Base", final_label="Finetuned",
+):
+    """Print NDCG@10 and full metrics comparison tables."""
+    delta_sym = "\u0394"
     print(f"\n{'='*58}")
     print("Matryoshka Dimension Comparison (NDCG@10)")
     print(f"{'='*58}")
-    print(f"{'Dim':>6}  {'Base':>14}  {'Finetuned':>14}  {'Δ':>8}")
+    print(
+        f"{'Dim':>6}  {base_label:>14}  "
+        f"{final_label:>14}  {delta_sym:>8}"
+    )
     print(f"{'-'*6}  {'-'*14}  {'-'*14}  {'-'*8}")
-    for dim in MATRYOSHKA_DIMS:
+    for dim in matryoshka_dims:
         key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
         base = base_results[key]
         final = final_results[key]
         delta = final - base
-        print(f"{dim:>6}  {base:>14.4f}  {final:>14.4f}  {delta:>+8.4f}")
+        print(
+            f"{dim:>6}  {base:>14.4f}  "
+            f"{final:>14.4f}  {delta:>+8.4f}"
+        )
     print(f"{'='*58}")
 
-    # Detailed metrics at full dimensionality (1024)
-    full_dim = MATRYOSHKA_DIMS[0]
+    full_dim = matryoshka_dims[0]
     prefix = f"eu-ai-act-nl-dim{full_dim}_cosine_"
     detail_metrics = [
         ("NDCG@10", "ndcg@10"),
@@ -386,12 +195,132 @@ if __name__ == "__main__":
     print(f"\n{'='*58}")
     print(f"Full Metrics at dim={full_dim}")
     print(f"{'='*58}")
-    print(f"{'Metric':<16}  {'Base':>10}  {'Finetuned':>10}  {'Δ':>10}")
+    print(
+        f"{'Metric':<16}  {base_label:>10}  "
+        f"{final_label:>10}  {delta_sym:>10}"
+    )
     print(f"{'-'*16}  {'-'*10}  {'-'*10}  {'-'*10}")
     for label, suffix in detail_metrics:
         key = prefix + suffix
         base = base_results.get(key, 0)
         final = final_results.get(key, 0)
         delta = final - base
-        print(f"{label:<16}  {base:>10.4f}  {final:>10.4f}  {delta:>+10.4f}")
+        print(
+            f"{label:<16}  {base:>10.4f}  "
+            f"{final:>10.4f}  {delta:>+10.4f}"
+        )
     print(f"{'='*58}")
+
+
+if __name__ == "__main__":
+
+    # -------------------------------------------------------------------
+    # CONFIG — edit these values directly
+    # -------------------------------------------------------------------
+    PROJECT_ROOT    = Path(__file__).resolve().parent.parent.parent
+
+    MODEL_NAME      = "intfloat/multilingual-e5-large"
+    TRAIN_DIR       = PROJECT_ROOT / "data" / "processed" / "train"
+    EVAL_DIR        = PROJECT_ROOT / "data" / "processed" / "eval"
+    OUTPUT_DIR      = PROJECT_ROOT / "models" / "stage_1_mnrl"
+    INSTRUCT        = False
+
+    BATCH_SIZE      = 128
+    GRAD_ACCUM      = 1
+    EPOCHS          = 3
+    LR              = 2e-5
+    WARMUP_RATIO    = 0.1
+    WEIGHT_DECAY    = 0.01
+    MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
+
+    # -------------------------------------------------------------------
+    # Setup
+    # -------------------------------------------------------------------
+    device, use_fp16, use_bf16 = detect_device()
+    query_prompt, corpus_prompt = build_prompts(INSTRUCT)
+
+    # -------------------------------------------------------------------
+    # Load model & data
+    # -------------------------------------------------------------------
+    model = load_model(MODEL_NAME)
+
+    train_dataset = load_from_disk(str(TRAIN_DIR))
+    print(f"Train samples: {len(train_dataset)}")
+
+    queries, corpus, relevant_docs = load_eval_data(EVAL_DIR)
+    print(f"Eval queries: {len(queries)}, corpus: {len(corpus)}")
+
+    # -------------------------------------------------------------------
+    # Build evaluator & evaluate base model
+    # -------------------------------------------------------------------
+    eval_suite, primary_metric = build_evaluators(
+        queries, corpus, relevant_docs, MATRYOSHKA_DIMS,
+        query_prompt, corpus_prompt,
+    )
+
+    print("\nEvaluating base model at all Matryoshka dims...")
+    base_results = eval_suite(model)
+    for dim in MATRYOSHKA_DIMS:
+        key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
+        print(f"  Base NDCG@10 (dim={dim}): {base_results[key]:.4f}")
+
+    # -------------------------------------------------------------------
+    # Train
+    # -------------------------------------------------------------------
+    loss = build_loss(model, MATRYOSHKA_DIMS)
+
+    training_args = SentenceTransformerTrainingArguments(
+        output_dir=str(OUTPUT_DIR),
+        num_train_epochs=EPOCHS,
+        per_device_train_batch_size=BATCH_SIZE,
+        per_device_eval_batch_size=BATCH_SIZE,
+        gradient_accumulation_steps=GRAD_ACCUM,
+        learning_rate=LR,
+        warmup_ratio=WARMUP_RATIO,
+        weight_decay=WEIGHT_DECAY,
+        fp16=use_fp16,
+        bf16=use_bf16,
+        gradient_checkpointing=False,
+        prompts={
+            "anchor": query_prompt,
+            "positive": corpus_prompt,
+        },
+        batch_sampler=BatchSamplers.NO_DUPLICATES,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=2,
+        load_best_model_at_end=True,
+        metric_for_best_model=primary_metric,
+        logging_steps=5,
+        logging_first_step=True,
+        run_name="e5-large-ai-act-nl-mnrl",
+        report_to="tensorboard",
+    )
+
+    trainer = SentenceTransformerTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        loss=loss,
+        evaluator=eval_suite,
+    )
+
+    effective_batch = BATCH_SIZE * GRAD_ACCUM
+    steps_per_epoch = len(train_dataset) // effective_batch
+    print(f"\nStarting training for {EPOCHS} epochs...")
+    print(f"  Effective batch: {BATCH_SIZE} x {GRAD_ACCUM} = {effective_batch}")
+    print(f"  Steps per epoch: ~{steps_per_epoch}")
+    print(f"  Total steps:     ~{steps_per_epoch * EPOCHS}")
+    trainer.train()
+
+    # -------------------------------------------------------------------
+    # Final evaluation & save
+    # -------------------------------------------------------------------
+    print("\nEvaluating fine-tuned model at all Matryoshka dims...")
+    final_results = eval_suite(model)
+
+    final_path = OUTPUT_DIR / "final"
+    model.save_pretrained(str(final_path))
+    print(f"\nModel saved to: {final_path}")
+
+    print_summary(base_results, final_results, MATRYOSHKA_DIMS)

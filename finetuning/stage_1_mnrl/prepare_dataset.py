@@ -161,82 +161,37 @@ def print_split_stats(
 
 
 if __name__ == "__main__":
-    import argparse
 
     # -------------------------------------------------------------------
-    # CONFIG
+    # CONFIG — edit these values directly
     # -------------------------------------------------------------------
+    PROJECT_ROOT  = Path(__file__).resolve().parent.parent.parent
 
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-    # HuggingFace dataset repository ID
-    DEFAULT_REPO_ID = "danielnoumon/eu-ai-act-nl-queries"
-
-    # Output directories
-    DEFAULT_TRAIN_DIR = (
-        PROJECT_ROOT / "data" / "processed" / "train"
-    )
-    DEFAULT_EVAL_DIR = (
-        PROJECT_ROOT / "data" / "processed" / "eval"
-    )
-
-    # Fraction of unique chunks held out for evaluation.
-    # 15% gives ~86 eval chunks (~344 pairs) — enough for
-    # stable MRR/NDCG/Recall estimates without starving training.
+    REPO_ID       = "danielnoumon/eu-ai-act-nl-queries"
+    TRAIN_DIR     = PROJECT_ROOT / "data" / "processed" / "train"
+    EVAL_DIR      = PROJECT_ROOT / "data" / "processed" / "eval"
     EVAL_FRACTION = 0.15
-
-    # Random seed for reproducible splits.
-    SEED = 42
+    SEED          = 42
 
     # -------------------------------------------------------------------
-
-    parser = argparse.ArgumentParser(
-        description="Prepare train/eval splits for MNRL fine-tuning"
-    )
-    parser.add_argument(
-        "--repo-id", type=str, default=DEFAULT_REPO_ID,
-        help="HuggingFace dataset repo ID"
-    )
-    parser.add_argument(
-        "--train-dir", type=str, default=str(DEFAULT_TRAIN_DIR),
-        help="Output directory for train dataset"
-    )
-    parser.add_argument(
-        "--eval-dir", type=str, default=str(DEFAULT_EVAL_DIR),
-        help="Output directory for eval dataset"
-    )
-    parser.add_argument(
-        "--eval-fraction", type=float, default=EVAL_FRACTION,
-        help="Fraction of chunks for eval (default: 0.15)"
-    )
-    parser.add_argument(
-        "--seed", type=int, default=SEED,
-        help="Random seed (default: 42)"
-    )
-    args = parser.parse_args()
-
-    # Load pairs from HuggingFace
-    print(f"Loading pairs from HuggingFace: {args.repo_id}")
-    pairs = load_pairs(args.repo_id)
+    # Pipeline
+    # -------------------------------------------------------------------
+    print(f"Loading pairs from HuggingFace: {REPO_ID}")
+    pairs = load_pairs(REPO_ID)
     print(f"Loaded {len(pairs)} pairs")
 
-    # Split
     train_pairs, eval_pairs = chunk_level_split(
-        pairs,
-        eval_fraction=args.eval_fraction,
-        seed=args.seed,
+        pairs, eval_fraction=EVAL_FRACTION, seed=SEED,
     )
     print_split_stats(train_pairs, eval_pairs)
 
     # Build and save train dataset
-    train_dir = Path(args.train_dir)
-    train_dir.mkdir(parents=True, exist_ok=True)
+    TRAIN_DIR.mkdir(parents=True, exist_ok=True)
     train_dataset = build_train_dataset(train_pairs)
-    train_dataset.save_to_disk(str(train_dir))
-    print(f"Train dataset saved to: {train_dir}")
+    train_dataset.save_to_disk(str(TRAIN_DIR))
+    print(f"Train dataset saved to: {TRAIN_DIR}")
 
     # Build and save eval dicts
-    eval_dir = Path(args.eval_dir)
     queries, corpus, relevant_docs = build_eval_dicts(eval_pairs)
-    save_eval_dicts(queries, corpus, relevant_docs, eval_dir)
-    print(f"\nEval data saved to: {eval_dir}")
+    save_eval_dicts(queries, corpus, relevant_docs, EVAL_DIR)
+    print(f"\nEval data saved to: {EVAL_DIR}")
