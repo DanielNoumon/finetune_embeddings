@@ -222,9 +222,10 @@ if __name__ == "__main__":
 
     BATCH_SIZE      = 16
     GRAD_ACCUM      = 8
-    EPOCHS          = 3
-    LR              = 5e-6
-    WARMUP_STEPS    = 5
+    EPOCHS          = 1
+    LR              = 1e-6
+    WARMUP_STEPS    = 3
+    MAX_GRAD_NORM   = 0.3
     WEIGHT_DECAY    = 0.01
     MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
 
@@ -272,6 +273,7 @@ if __name__ == "__main__":
         gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
         warmup_steps=WARMUP_STEPS,
+        max_grad_norm=MAX_GRAD_NORM,
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
         bf16=use_bf16,
