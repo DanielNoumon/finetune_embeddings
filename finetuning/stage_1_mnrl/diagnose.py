@@ -7,10 +7,7 @@ Tests:
 """
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
-from sentence_transformers.losses import (
-    MultipleNegativesRankingLoss,
-    MatryoshkaLoss,
-)
+from sentence_transformers.losses import MultipleNegativesRankingLoss
 from sentence_transformers.trainer import SentenceTransformerTrainer
 from sentence_transformers.training_args import (
     SentenceTransformerTrainingArguments,
@@ -47,26 +44,22 @@ def check_embeddings(model, label):
     return cos01, cos02
 
 
-def run_test(test_name, loss_fn, use_prompts, max_steps=10):
+def run_test(test_name, attn_impl, use_bf16, max_steps=10):
     """Run a short training test and check for collapse."""
     print(f"\n{'='*60}")
     print(f"TEST: {test_name}")
+    print(f"  attn={attn_impl}, bf16={use_bf16}")
     print(f"{'='*60}")
 
     model = SentenceTransformer(
         "intfloat/multilingual-e5-large-instruct",
-        model_kwargs={"attn_implementation": "sdpa"},
+        model_kwargs={"attn_implementation": attn_impl},
     )
 
     check_embeddings(model, "before training")
 
     train_dataset = load_from_disk(str(TRAIN_DIR))
-
-    prompts = {}
-    if use_prompts:
-        prompts = {"anchor": INSTRUCT_PREFIX, "positive": ""}
-
-    loss = loss_fn(model)
+    loss = MultipleNegativesRankingLoss(model)
 
     args = SentenceTransformerTrainingArguments(
         output_dir=str(PROJECT_ROOT / "models" / "diagnostic"),
@@ -74,9 +67,10 @@ def run_test(test_name, loss_fn, use_prompts, max_steps=10):
         per_device_train_batch_size=16,
         learning_rate=5e-6,
         warmup_steps=2,
-        bf16=True,
+        bf16=use_bf16,
+        fp16=False,
         gradient_checkpointing=False,
-        prompts=prompts,
+        prompts={"anchor": INSTRUCT_PREFIX, "positive": ""},
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         logging_steps=1,
         save_strategy="no",
@@ -94,40 +88,14 @@ def run_test(test_name, loss_fn, use_prompts, max_steps=10):
 
 
 if __name__ == "__main__":
-    # Test 1: Plain MNRL, WITH prompts
-    run_test(
-        "Plain MNRL + instruct prompts",
-        loss_fn=lambda m: MultipleNegativesRankingLoss(m),
-        use_prompts=True,
-        max_steps=10,
-    )
+    # Test 1: SDPA + bf16 (current failing config)
+    run_test("SDPA + bf16", attn_impl="sdpa", use_bf16=True)
 
-    # Test 2: Plain MNRL, WITHOUT prompts
-    run_test(
-        "Plain MNRL, no prompts",
-        loss_fn=lambda m: MultipleNegativesRankingLoss(m),
-        use_prompts=False,
-        max_steps=10,
-    )
+    # Test 2: Eager attention + bf16 (isolates SDPA issue)
+    run_test("Eager + bf16", attn_impl="eager", use_bf16=True)
 
-    # Test 3: Matryoshka + MNRL, WITH prompts (what we've been running)
-    run_test(
-        "Matryoshka + MNRL + instruct prompts",
-        loss_fn=lambda m: MatryoshkaLoss(
-            m, MultipleNegativesRankingLoss(m),
-            matryoshka_dims=[1024, 768, 512, 256, 128, 64],
-        ),
-        use_prompts=True,
-        max_steps=10,
-    )
+    # Test 3: SDPA + fp32 (isolates bf16 issue)
+    run_test("SDPA + fp32", attn_impl="sdpa", use_bf16=False)
 
-    # Test 4: Matryoshka + MNRL, WITHOUT prompts
-    run_test(
-        "Matryoshka + MNRL, no prompts",
-        loss_fn=lambda m: MatryoshkaLoss(
-            m, MultipleNegativesRankingLoss(m),
-            matryoshka_dims=[1024, 768, 512, 256, 128, 64],
-        ),
-        use_prompts=False,
-        max_steps=10,
-    )
+    # Test 4: Eager + fp32 (safest config)
+    run_test("Eager + fp32", attn_impl="eager", use_bf16=False)
