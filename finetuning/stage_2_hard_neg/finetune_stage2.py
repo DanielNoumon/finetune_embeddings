@@ -74,10 +74,12 @@ def detect_device():
     """Detect compute device and precision support.
 
     Returns (device, use_fp16, use_bf16).
+    Note: bf16 causes gradient explosion on Blackwell GPUs
+    (RTX 5090) with this model. Default to fp32 for stability.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
-    use_fp16 = device == "cuda" and not use_bf16
+    use_fp16 = False
+    use_bf16 = False
     print(f"Device: {device}")
     if device == "cpu":
         print("  Training on CPU \u2014 this will be slow.")
@@ -87,7 +89,7 @@ def detect_device():
             torch.cuda.get_device_properties(0).total_memory / 1e9
         )
         print(f"  GPU: {gpu_name} ({gpu_mem:.1f} GB)")
-        print(f"  Precision: {'bf16' if use_bf16 else 'fp16'}")
+        print(f"  Precision: fp32")
     return device, use_fp16, use_bf16
 
 
@@ -99,12 +101,12 @@ def build_prompts(instruct, instruct_prefix):
 
 
 def load_model(model_name, instruct=False):
-    """Load SentenceTransformer with SDPA attention."""
+    """Load SentenceTransformer with eager attention."""
     print(f"\nLoading model: {model_name}")
     model_variant = "Instruct" if instruct else "Standard"
     return SentenceTransformer(
         model_name,
-        model_kwargs={"attn_implementation": "sdpa"},
+        model_kwargs={"attn_implementation": "eager"},
         model_card_data=SentenceTransformerModelCardData(
             language="nl",
             license="apache-2.0",
