@@ -26,7 +26,7 @@ pipeline_tag: sentence-similarity
 
 # Qwen3-Embedding-0.6B EU AI Act NL
 
-Fine-tuned **Qwen3-Embedding-0.6B** for Dutch/English retrieval on EU AI Act documentation. Supports **Matryoshka embeddings** (1024, 768, 512, 256, 128, 64 dimensions) for flexible speed/quality tradeoffs.
+Fine-tuned **Qwen3-Embedding-0.6B** for Dutch/English retrieval on [EU AI Act documentation](https://huggingface.co/datasets/danielnoumon/eu-ai-act-nl-queries). Supports **Matryoshka embeddings** (1024, 768, 512, 256, 128, 64 dimensions) for flexible speed/quality tradeoffs.
 
 ## Model Details
 
