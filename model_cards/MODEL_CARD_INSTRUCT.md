@@ -21,10 +21,13 @@ _(Pending — results will be added after Stage 2 completes)_
 
 Mine hard negatives from the Stage 1 model, then fine-tune further with explicit hard negatives + in-batch negatives.
 
-## Evaluation Dataset
+## Dataset
 
-- **340 queries**, **85 corpus chunks** from the EU AI Act
-- Queries are synthetic, generated via Azure OpenAI GPT-5-mini
+**Training data:** [danielnoumon/eu-ai-act-nl-queries](https://huggingface.co/datasets/danielnoumon/eu-ai-act-nl-queries)
+
+- 2,284 synthetic Dutch query-chunk pairs (1,944 train / 340 eval)
+- Source: EU AI Act (Dutch translation)
+- Queries generated via Azure OpenAI GPT-5-mini
 - Split at the chunk level to prevent data leakage between train and eval
 
 ---
