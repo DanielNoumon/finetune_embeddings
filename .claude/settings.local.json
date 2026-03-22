@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls \"c:\\\\Users\\\\DanielNoumon\\\\Personal\\\\Personal projects\\\\finetune_embeddings\\\\models\"\" 2>/dev/null || echo \"models/ not found locally \")"
-    ]
-  }
-}
