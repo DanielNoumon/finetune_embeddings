@@ -138,7 +138,7 @@ if __name__ == "__main__":
     OUTPUT_DIR   = PROJECT_ROOT / "data" / "processed" / "train_hard_neg"
     N_NEGATIVES  = 1
     BATCH_SIZE   = 64
-    INSTRUCT     = True
+    INSTRUCT     = False
     INSTRUCT_PREFIX = (
         "Instruct: Given a question about EU AI regulation, "
         "retrieve the most relevant passage\nQuery: "

@@ -60,3 +60,4 @@ models/
 checkpoints/
 runs/
 MODEL_CARD.md
+GPU_LEARNINGS.md
