@@ -1,22 +1,26 @@
-# Fine-tuning Embeddings for EU AI Act (NL)
+# Fine-tuning Embeddings for Dutch EU Regulations
 
-Fine-tunes multilingual embedding models for semantic search and retrieval on the Dutch EU AI Act using synthetic query-chunk pairs.
+Fine-tunes multilingual embedding models for semantic search and retrieval on Dutch EU regulations (EU AI Act, GDPR) using synthetic query-chunk pairs.
 
 ## Project Structure
 
 ```
 .
 ├── data/
-│   ├── documents/              # Source PDFs
-│   ├── chunks/                 # Chunked text output
+│   ├── documents/              # Source PDFs (EU AI Act, GDPR)
+│   ├── chunks/                 # Chunked text output per document
+│   │   ├── eu_ai_act/          #   535 chunks (recitals + articles + annexes)
+│   │   └── gdpr/               #   378 chunks (recitals + articles)
 │   ├── synthetic/              # Generated query-chunk pairs (gitignored)
 │   └── processed/              # Train/eval splits (gitignored)
 ├── synthetic_dataset_creation/
-│   ├── chunker.py              # Semantic hierarchical chunking
-│   ├── generate_queries.py     # Synthetic query generation
+│   ├── chunker.py              # Semantic hierarchical chunking (multi-doc)
+│   ├── generate_queries.py     # Synthetic query generation (any OpenAI-compatible LLM)
 │   ├── prepare_hf_dataset.py   # Convert to HF format
 │   ├── view_dataset.py         # Dataset viewer utility
 │   └── analyze_queries.py      # Query quality analysis
+├── evaluation/
+│   └── eval_openai.py          # Benchmark vs text-embedding-3-large
 ├── finetuning/
 │   ├── e5_large_stage1/        # e5-large: Stage 1 (MNRL)
 │   │   ├── finetune_stage1.py
@@ -48,13 +52,13 @@ Fine-tunes multilingual embedding models for semantic search and retrieval on th
 ```bash
 uv run python synthetic_dataset_creation/chunker.py
 ```
-Chunks the EU AI Act PDF using semantic hierarchical chunking (~573 chunks).
+Chunks EU regulation PDFs using semantic hierarchical chunking. Supports multiple documents — set `DOC` in the config section (`"eu_ai_act"`, `"gdpr"`, or `"all"`).
 
 ### 2. Synthetic Query Generation
 ```bash
 uv run python synthetic_dataset_creation/generate_queries.py
 ```
-Generates 4 diverse Dutch queries per chunk using GPT-5-mini (2,284 pairs total).
+Generates diverse Dutch queries per chunk using any OpenAI-compatible endpoint (Ollama, vLLM, Azure OpenAI, OpenAI, etc.). Set `DOC`, `MODEL`, and `BASE_URL` in the config section.
 
 ### 3. Dataset Preparation
 ```bash
@@ -100,8 +104,7 @@ python finetuning/qwen3_4b/upload_to_hf.py
 
 **Published at:** [danielnoumon/eu-ai-act-nl-queries](https://huggingface.co/datasets/danielnoumon/eu-ai-act-nl-queries)
 
-- 2,284 synthetic Dutch query-chunk pairs
-- Source: EU AI Act (Dutch translation)
+- Synthetic Dutch query-chunk pairs from EU AI Act and GDPR
 - For embedding fine-tuning, semantic search, and RAG applications
 
 ## Results
@@ -110,6 +113,7 @@ NDCG@10 at dim=1024 on held-out eval set (340 queries, 85 chunks):
 
 | Model | Stage 1 | Stage 2 | HuggingFace |
 |-------|---------|---------|-------------|
+| text-embedding-3-large (zero-shot) | — | 0.8556 | — |
 | multilingual-e5-large (batch 8, MNRL) | 0.9327 | **0.9492** | — |
 | multilingual-e5-large (batch 128, CachedMNRL) | 0.9422 | 0.9463 | — |
 | Qwen3-Embedding-0.6B (CachedMNRL) | 0.9419 | 0.9467 | [danielnoumon/qwen3-embedding-0.6b-ai-act-nl](https://huggingface.co/danielnoumon/qwen3-embedding-0.6b-ai-act-nl) |
@@ -119,11 +123,21 @@ Zero-shot baselines: e5-large 0.8612, Qwen3-0.6B 0.8013, Qwen3-4B not measured.
 
 ## Configuration
 
-Create a `.env` file with your Azure OpenAI credentials:
+Create a `.env` file (gitignored) with the relevant credentials:
 ```
-AZURE_OPENAI_API_KEY=your_key_here
-AZURE_OPENAI_ENDPOINT_GPT5_MINI=your_endpoint_here
-DEPLOYMENT_NAME_GPT5_MINI=your_deployment_name
-API_VERSION_GPT5_MINI=2024-10-01-preview
-HF_TOKEN=hf_your_token_here  # Optional, for HF uploads
+# Query generation — any OpenAI-compatible endpoint
+# Option A: Local model (Ollama, vLLM, etc.)
+LLM_BASE_URL=http://localhost:11434/v1
+LLM_MODEL=qwen3:30b-a3b
+# Option B: OpenAI / Azure OpenAI
+# LLM_BASE_URL=https://api.openai.com/v1
+# LLM_MODEL=gpt-4o-mini
+# LLM_API_KEY=sk-...
+
+# Evaluation — OpenAI text-embedding-3-large benchmark (optional)
+EMBEDDINGS_AZURE_OPENAI_ENDPOINT=your_endpoint
+EMBEDDINGS_AZURE_OPENAI_KEY=your_key
+
+# HuggingFace uploads (optional)
+HF_TOKEN=hf_your_token_here
 ```

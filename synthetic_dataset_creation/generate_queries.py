@@ -1,11 +1,16 @@
 """
 Synthetic query generation for embedding fine-tuning.
 
-For each chunk from the EU AI Act (NL), generates diverse Dutch queries
-that the chunk would answer. Outputs (anchor, positive) pairs in JSONL
-format, ready for Sentence Transformers MNRL training.
+For each chunk from a Dutch EU regulation (EU AI Act, GDPR, etc.),
+generates diverse Dutch queries that the chunk would answer. Outputs
+(anchor, positive) pairs in JSONL format, ready for Sentence
+Transformers MNRL training.
 
-Requires: Azure OpenAI credentials in .env or environment.
+Uses an OpenAI-compatible endpoint (Ollama, vLLM, Azure, etc.)
+for query generation.
+
+Usage:
+  Set DOC and endpoint config in the __main__ section at the bottom.
 """
 
 from __future__ import annotations
@@ -13,35 +18,39 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-import httpx
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Default paths (can be overridden in run())
+# Project root
 # ---------------------------------------------------------------------------
 
-DEFAULT_CHUNKS_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "data" / "chunks" / "chunks_without_context.jsonl"
-)
-DEFAULT_OUTPUT_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "data" / "synthetic" / "query_pairs.jsonl"
-)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
-# System prompt
+# Document-specific configurations
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """\
+@dataclass
+class QueryGenConfig:
+    """Configuration for query generation per document."""
+    name: str
+    chunks_path: Path
+    output_path: Path
+    system_prompt: str
+    user_prompt_template: str
+
+
+SYSTEM_PROMPT_EU_AI_ACT = """\
 Je bent een expert in de EU AI-verordening (EU AI Act) in het Nederlands.
 
 Je taak: gegeven een tekstfragment uit de EU AI Act, genereer {n} diverse \
@@ -73,19 +82,39 @@ Voorbeeld output:
 "Wat wordt bedoeld met transparantieverplichtingen voor AI?"]}}
 """
 
+SYSTEM_PROMPT_GDPR = """\
+Je bent een expert in de Algemene Verordening Gegevensbescherming (AVG/GDPR) \
+in het Nederlands.
 
-# ---------------------------------------------------------------------------
-# Pydantic output schema
-# ---------------------------------------------------------------------------
+Je taak: gegeven een tekstfragment uit de AVG, genereer {n} diverse \
+zoekquery's in het Nederlands die een gebruiker zou kunnen stellen en waarvoor \
+dit fragment het relevante antwoord bevat.
 
-class GeneratedQueries(BaseModel):
-    """Structured output schema for LLM query generation."""
-    queries: list[str] = Field(
-        description="Lijst van diverse zoekquery's in het Nederlands"
-    )
+Regels:
+- Schrijf ALLEEN in het Nederlands.
+- Elke query moet een andere invalshoek hebben. Wissel VERPLICHT af tussen:
+  * Feitelijke vragen ("Wanneer is toestemming vereist voor gegevensverwerking?")
+  * Definitievragen ("Wat zijn persoonsgegevens volgens de AVG?")
+  * Procedurele vragen ("Hoe voer ik een DPIA uit?")
+  * Scenariovragen ("Een webshop wil klantgedrag bijhouden, welke regels gelden?")
+- BELANGRIJK: Genereer minstens 1 procedurele vraag ("Hoe...?", "Welke stappen...?") \
+en 1 scenariovraag ("Een bedrijf/organisatie wil...") per {n} queries.
+- Varieer de lengte: genereer zowel korte (30-60 tekens) als langere queries \
+(100-150 tekens).
+- Query's moeten realistisch zijn — alsof een jurist, privacyfunctionaris (DPO), \
+beleidsmaker of compliance officer ze zou stellen.
+- Verwijs NIET letterlijk naar artikelnummers in de query (de gebruiker kent \
+die nummers vaak niet).
+- Antwoord met een JSON-object met een "queries" veld.
 
+Voorbeeld output:
+{{"queries": ["Rechten van betrokkenen?", \
+"Hoe meld ik een datalek bij de toezichthouder?", \
+"Een ziekenhuis wil patiëntgegevens delen met een onderzoeksinstelling, mag dat?", \
+"Wat houdt het recht op vergetelheid in volgens de privacywet?"]}}
+"""
 
-USER_PROMPT_TEMPLATE = """\
+USER_PROMPT_EU_AI_ACT = """\
 Tekstfragment (bron: EU AI Act NL):
 ---
 {chunk_text}
@@ -97,6 +126,47 @@ Metadata:
 
 Genereer {n} diverse zoekquery's waarvoor bovenstaand fragment het antwoord is.\
 """
+
+USER_PROMPT_GDPR = """\
+Tekstfragment (bron: AVG/GDPR NL):
+---
+{chunk_text}
+---
+
+Metadata:
+- Type: {section_type}
+- Locatie: {hierarchy_path}
+
+Genereer {n} diverse zoekquery's waarvoor bovenstaand fragment het antwoord is.\
+"""
+
+DOCUMENTS: dict[str, QueryGenConfig] = {
+    "eu_ai_act": QueryGenConfig(
+        name="eu_ai_act",
+        chunks_path=PROJECT_ROOT / "data" / "chunks" / "eu_ai_act" / "chunks_without_context.jsonl",
+        output_path=PROJECT_ROOT / "data" / "synthetic" / "eu_ai_act_query_pairs.jsonl",
+        system_prompt=SYSTEM_PROMPT_EU_AI_ACT,
+        user_prompt_template=USER_PROMPT_EU_AI_ACT,
+    ),
+    "gdpr": QueryGenConfig(
+        name="gdpr",
+        chunks_path=PROJECT_ROOT / "data" / "chunks" / "gdpr" / "chunks_without_context.jsonl",
+        output_path=PROJECT_ROOT / "data" / "synthetic" / "gdpr_query_pairs.jsonl",
+        system_prompt=SYSTEM_PROMPT_GDPR,
+        user_prompt_template=USER_PROMPT_GDPR,
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Pydantic output schema
+# ---------------------------------------------------------------------------
+
+class GeneratedQueries(BaseModel):
+    """Structured output schema for LLM query generation."""
+    queries: list[str] = Field(
+        description="Lijst van diverse zoekquery's in het Nederlands"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -116,54 +186,49 @@ class QueryPair:
 # Query generation
 # ---------------------------------------------------------------------------
 
+def _extract_json(text: str) -> str:
+    """Extract a JSON object from LLM output that may contain markdown fences or thinking tags."""
+    # Strip <think>...</think> blocks (e.g. DeepSeek-R1, Qwen3)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Try to find JSON inside markdown code fences
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        return m.group(1)
+    # Try to find a raw JSON object
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        return m.group(0)
+    return text.strip()
+
+
 async def generate_queries_for_chunk(
-    client: httpx.AsyncClient,
-    endpoint: str,
-    api_key: str,
-    deployment: str,
+    client: AsyncOpenAI,
+    model: str,
     chunk: dict,
+    config: QueryGenConfig,
     semaphore: asyncio.Semaphore,
     n: int = 4,
 ) -> list[QueryPair]:
-    """Call the LLM to generate N queries for a single chunk using Responses API."""
-    user_msg = USER_PROMPT_TEMPLATE.format(
+    """Call the LLM to generate N queries for a single chunk."""
+    user_msg = config.user_prompt_template.format(
         chunk_text=chunk["text"],
         section_type=chunk["section_type"],
         hierarchy_path=chunk["hierarchy_path"],
         n=n,
     )
 
-    # Combine system and user messages into single input
-    full_input = f"{SYSTEM_PROMPT.format(n=n)}\n\n{user_msg}"
-
     async with semaphore:
         try:
-            response = await client.post(
-                endpoint,
-                headers={
-                    "api-key": api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": deployment,
-                    "input": full_input,
-                },
-                timeout=60.0,
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": config.system_prompt.format(n=n)},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.7,
             )
-            response.raise_for_status()
-            data = response.json()
-
-            # Responses API returns output as a list with message content
-            output_items = data.get("output", [])
-            # Find the message item (type='message')
-            content = "{}"
-            for item in output_items:
-                if item.get("type") == "message":
-                    msg_content = item.get("content", [])
-                    if msg_content and msg_content[0].get("type") == "output_text":
-                        content = msg_content[0].get("text", "{}")
-                        break
-
+            content = response.choices[0].message.content or "{}"
+            content = _extract_json(content)
             parsed = GeneratedQueries.model_validate_json(content)
             queries = parsed.queries
         except Exception as e:
@@ -187,38 +252,33 @@ async def generate_queries_for_chunk(
 # ---------------------------------------------------------------------------
 
 async def run(
-    chunks_path: Path | None = None,
-    output_path: Path | None = None,
+    config: QueryGenConfig,
+    base_url: str,
+    model: str,
+    api_key: str = "ollama",
     n_queries: int = 4,
     max_chunks: int | None = None,
-    deployment: str = "gpt-5-mini",
     max_concurrent: int = 10,
 ):
     """Generate queries for all chunks and save to JSONL."""
-    chunks_path = chunks_path or DEFAULT_CHUNKS_PATH
-    output_path = output_path or DEFAULT_OUTPUT_PATH
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    config.output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load chunks
-    with open(chunks_path, "r", encoding="utf-8") as f:
+    with open(config.chunks_path, "r", encoding="utf-8") as f:
         chunks = [json.loads(line) for line in f]
 
     if max_chunks:
         chunks = chunks[:max_chunks]
 
-    print(f"Generating {n_queries} queries per chunk for {len(chunks)} chunks "
-          f"(deployment: {deployment}) ...")
+    print(f"[{config.name}] Generating {n_queries} queries per chunk for "
+          f"{len(chunks)} chunks (model: {model}) ...")
 
-    # Use Responses API endpoint directly
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT_GPT5_MINI", "")
-    api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
-
-    client = httpx.AsyncClient()
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
     semaphore = asyncio.Semaphore(max_concurrent)
 
     tasks = [
         generate_queries_for_chunk(
-            client, endpoint, api_key, deployment, chunk, semaphore, n_queries
+            client, model, chunk, config, semaphore, n_queries,
         )
         for chunk in chunks
     ]
@@ -238,19 +298,19 @@ async def run(
                   f"({len(all_pairs)} pairs, {elapsed:.0f}s)")
 
     # Backup existing file if it exists
-    if output_path.exists():
+    if config.output_path.exists():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = output_path.parent / f"{output_path.stem}_backup_{timestamp}{output_path.suffix}"
-        shutil.copy2(output_path, backup_path)
+        backup_path = config.output_path.parent / f"{config.output_path.stem}_backup_{timestamp}{config.output_path.suffix}"
+        shutil.copy2(config.output_path, backup_path)
         print(f"\n[BACKUP] Existing file backed up to: {backup_path.name}")
 
     # Save
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(config.output_path, "w", encoding="utf-8") as f:
         for pair in all_pairs:
             f.write(json.dumps(asdict(pair), ensure_ascii=False) + "\n")
 
     elapsed = time.time() - start
-    print(f"\nDone. {len(all_pairs)} query-chunk pairs saved to {output_path}")
+    print(f"\nDone. {len(all_pairs)} query-chunk pairs saved to {config.output_path}")
     print(f"Time: {elapsed:.0f}s")
 
     return all_pairs
@@ -261,44 +321,44 @@ async def run(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import argparse
 
     # -----------------------------------------------------------------------
     # CONFIG: Adjust these parameters for your use case
     # -----------------------------------------------------------------------
+
+    # Which document(s) to process: "eu_ai_act", "gdpr", or "all"
+    DOC = "gdpr"
+
+    # --- LLM endpoint (OpenAI-compatible: Ollama, vLLM, Azure, etc.) ---
+    # Set LLM_BASE_URL and LLM_MODEL in your .env file
+    BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
+    MODEL = os.getenv("LLM_MODEL", "qwen3:30b-a3b")
+    API_KEY = os.getenv("LLM_API_KEY", "ollama")
 
     # Number of queries to generate per chunk
     # Higher = more training data, but diminishing returns beyond 5
     # Typical range: 3-5 queries per chunk
     QUERIES_PER_CHUNK = 4
 
-    # Azure OpenAI deployment name for query generation
-    # Must match your Azure deployment (e.g., gpt-5-mini, gpt-4o-mini)
-    DEPLOYMENT = os.getenv("DEPLOYMENT_NAME_GPT5_MINI", "gpt-5-mini")
+    # Limit number of chunks to process (for testing). None = all chunks
+    MAX_CHUNKS = None
 
     # Max concurrent API requests
-    # Higher = faster generation, but risks rate limits
-    # Adjust based on your Azure quota (10 is safe for most deployments)
-    MAX_CONCURRENT = 10
+    # Local models: keep low (2-4) to avoid OOM
+    # Cloud APIs: can go higher (10+)
+    MAX_CONCURRENT = 2
 
     # -----------------------------------------------------------------------
 
-    parser = argparse.ArgumentParser(
-        description="Generate synthetic queries for embedding fine-tuning"
-    )
-    parser.add_argument(
-        "--max-chunks", type=int, default=None,
-        help="Limit number of chunks to process (for testing)"
-    )
-    parser.add_argument(
-        "--queries-per-chunk", type=int, default=QUERIES_PER_CHUNK,
-        help=f"Number of queries per chunk (default: {QUERIES_PER_CHUNK})"
-    )
-    args = parser.parse_args()
-
-    asyncio.run(run(
-        n_queries=args.queries_per_chunk,
-        max_chunks=args.max_chunks,
-        deployment=DEPLOYMENT,
-        max_concurrent=MAX_CONCURRENT,
-    ))
+    docs = list(DOCUMENTS.keys()) if DOC == "all" else [DOC]
+    for doc_name in docs:
+        config = DOCUMENTS[doc_name]
+        asyncio.run(run(
+            config=config,
+            base_url=BASE_URL,
+            model=MODEL,
+            api_key=API_KEY,
+            n_queries=QUERIES_PER_CHUNK,
+            max_chunks=MAX_CHUNKS,
+            max_concurrent=MAX_CONCURRENT,
+        ))

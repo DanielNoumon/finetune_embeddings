@@ -1,18 +1,27 @@
 """
-Semantic hierarchical chunker for the EU AI Act (NL) PDF.
+Semantic hierarchical chunker for Dutch EU regulation PDFs.
 
-Produces two JSONL outputs:
+Supports any regulation that follows the standard EU structure:
+  Recitals (Overwegingen) → Chapters (Hoofdstukken) → Articles (Artikelen) → Annexes (Bijlagen)
+
+Produces two JSONL outputs per document:
   - chunks_with_context.jsonl   (contextual header prepended to text)
   - chunks_without_context.jsonl (raw chunk text only)
 
 Each chunk carries rich metadata for downstream RAG and synthetic dataset generation.
+
+Usage:
+  Set DOC in the config section at the bottom of this file:
+    DOC = "all"         # Chunk all configured documents
+    DOC = "eu_ai_act"   # Chunk only the EU AI Act
+    DOC = "gdpr"        # Chunk only the GDPR
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
@@ -28,16 +37,55 @@ MAX_CHUNK_TOKENS = 1000
 OVERLAP_TOKENS = 50
 APPROX_CHARS_PER_TOKEN = 4  # rough estimate for Dutch text
 
-PDF_PATH = Path(__file__).resolve().parent.parent / "data" / "documents" / "eu_ai_act_NL.pdf"
-OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "chunks"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Patterns to strip from every page (headers / footers)
-FOOTER_PATTERNS = [
-    re.compile(r"PB L van \d{1,2}\.\d{1,2}\.\d{4}"),
-    re.compile(r"^NL$", re.MULTILINE),
-    re.compile(r"ELI:\s*http\S+"),
-    re.compile(r"\d{1,3}/144"),
-]
+
+@dataclass
+class DocumentConfig:
+    """Configuration for chunking a specific EU regulation PDF."""
+    name: str                        # short key, e.g. "eu_ai_act", "gdpr"
+    source_label: str                # used in chunk metadata, e.g. "eu_ai_act_NL"
+    display_name: str                # used in context headers, e.g. "EU AI Act (NL)"
+    pdf_path: Path
+    output_dir: Path
+    footer_patterns: list[re.Pattern] = field(default_factory=list)
+    definitions_article: int = 3     # which article contains definitions
+    has_annexes: bool = True
+
+
+# Pre-configured documents
+DOCUMENTS: dict[str, DocumentConfig] = {
+    "eu_ai_act": DocumentConfig(
+        name="eu_ai_act",
+        source_label="eu_ai_act_NL",
+        display_name="EU AI Act (NL)",
+        pdf_path=PROJECT_ROOT / "data" / "documents" / "eu_ai_act_NL.pdf",
+        output_dir=PROJECT_ROOT / "data" / "chunks" / "eu_ai_act",
+        footer_patterns=[
+            re.compile(r"PB L van \d{1,2}\.\d{1,2}\.\d{4}"),
+            re.compile(r"^NL$", re.MULTILINE),
+            re.compile(r"ELI:\s*http\S+"),
+            re.compile(r"\d{1,3}/144"),
+        ],
+        definitions_article=3,
+        has_annexes=True,
+    ),
+    "gdpr": DocumentConfig(
+        name="gdpr",
+        source_label="gdpr_NL",
+        display_name="AVG (NL)",
+        pdf_path=PROJECT_ROOT / "data" / "documents" / "gdpr_NL.pdf",
+        output_dir=PROJECT_ROOT / "data" / "chunks" / "gdpr",
+        footer_patterns=[
+            re.compile(r"Publicatieblad van de Europese Unie"),
+            re.compile(r"^NL$", re.MULTILINE),
+            re.compile(r"L\s+119/\d+"),
+            re.compile(r"\d{1,2}\.\d{1,2}\.\d{4}"),
+        ],
+        definitions_article=4,
+        has_annexes=False,
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -67,21 +115,21 @@ class Chunk:
 # Text extraction & cleaning
 # ---------------------------------------------------------------------------
 
-def extract_text(pdf_path: Path) -> str:
+def extract_text(pdf_path: Path, footer_patterns: list[re.Pattern]) -> str:
     """Extract full text from the PDF, cleaning headers/footers per page."""
     doc = fitz.open(str(pdf_path))
     pages: list[str] = []
     for page in doc:
         text = page.get_text()
-        text = _clean_page(text)
+        text = _clean_page(text, footer_patterns)
         pages.append(text)
     doc.close()
     return "\n".join(pages)
 
 
-def _clean_page(text: str) -> str:
+def _clean_page(text: str, footer_patterns: list[re.Pattern]) -> str:
     """Remove recurring headers, footers, and fix column-break artefacts."""
-    for pat in FOOTER_PATTERNS:
+    for pat in footer_patterns:
         text = pat.sub("", text)
     # Fix hyphenated line breaks from two-column layout (word-\n continuation)
     text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)
@@ -95,7 +143,11 @@ def _clean_page(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 # Regex patterns for structural elements
-RE_RECITAL = re.compile(r"^\((\d+)\)$", re.MULTILINE)
+# Recital pattern: (N) alone on a line, or (N) at line start followed by text.
+# GDPR recitals 100+ are inline: "(100) Teneinde..." instead of "(100)\n"
+RE_RECITAL = re.compile(
+    r"^\((\d+)\)\s*$|^\((\d+)\)\s+(?=[A-Z])", re.MULTILINE
+)
 RE_CHAPTER = re.compile(
     r"(HOOFDSTUK\s+[IVXLC]+)\s*\n"
     r"\s*((?![Aa][Ff][Dd][Ee][Ll][Ii][Nn][Gg])"
@@ -130,25 +182,40 @@ def _find_annexes_start(text: str) -> int:
 # Recital parsing
 # ---------------------------------------------------------------------------
 
-def _parse_recitals(text: str) -> list[Chunk]:
+def _parse_recitals(text: str, config: DocumentConfig) -> list[Chunk]:
     """Parse numbered recitals from the preamble."""
     chunks: list[Chunk] = []
-    matches = list(RE_RECITAL.finditer(text))
+    raw_matches = list(RE_RECITAL.finditer(text))
+
+    # Deduplicate: footnote refs like (1), (2) may appear before
+    # the actual recitals. Keep only the last match per number,
+    # then filter to a contiguous ascending sequence.
+    last_by_num: dict[int, re.Match] = {}
+    for m in raw_matches:
+        num = int(m.group(1) or m.group(2))
+        last_by_num[num] = m
+    matches = sorted(last_by_num.values(), key=lambda m: m.start())
+
     for i, m in enumerate(matches):
         start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        end = (
+            matches[i + 1].start()
+            if i + 1 < len(matches) else len(text)
+        )
         body = text[start:end].strip()
-        recital_num = int(m.group(1))
+        # group(1) for standalone, group(2) for inline
+        recital_num = int(m.group(1) or m.group(2))
         hierarchy = f"Overwegingen > ({recital_num})"
         chunk = Chunk(
             text=body,
+            source=config.source_label,
             section_type="overweging",
             paragraph_number=recital_num,
             hierarchy_path=hierarchy,
-            context_header=f"EU AI Act (NL) > Overwegingen > Overweging ({recital_num}):",
+            context_header=f"{config.display_name} > Overwegingen > Overweging ({recital_num}):",
         )
         if _estimate_tokens(body) > MAX_CHUNK_TOKENS:
-            chunks.extend(_split_long_text(chunk))
+            chunks.extend(_split_long_text(chunk, config))
         else:
             chunks.append(chunk)
     return chunks
@@ -158,7 +225,7 @@ def _parse_recitals(text: str) -> list[Chunk]:
 # Article parsing
 # ---------------------------------------------------------------------------
 
-def _parse_articles(text: str) -> list[Chunk]:
+def _parse_articles(text: str, config: DocumentConfig) -> list[Chunk]:
     """Parse articles, splitting long ones at paragraph (lid) boundaries."""
     chunks: list[Chunk] = []
 
@@ -222,7 +289,7 @@ def _parse_articles(text: str) -> list[Chunk]:
             para_chunks = _split_article_by_paragraphs(
                 art_body, art_num, art_title,
                 current_chapter, current_chapter_num,
-                current_section, hierarchy_parts,
+                current_section, hierarchy_parts, config,
             )
             chunks.extend(para_chunks)
 
@@ -237,20 +304,22 @@ def _split_article_by_paragraphs(
     chapter_num: str,
     section: str,
     hierarchy_parts: list[str],
+    config: DocumentConfig,
 ) -> list[Chunk]:
     """Split an article body into paragraph-level chunks."""
     para_matches = list(RE_PARAGRAPH.finditer(body))
 
-    # Special case: Artikel 3 (definitions) — split by lettered items
-    if art_num == 3:
-        return _split_definitions(body, art_title, chapter, chapter_num, section, hierarchy_parts)
+    # Special case: definitions article — split by numbered items
+    if art_num == config.definitions_article:
+        return _split_definitions(body, art_title, chapter, chapter_num, section, hierarchy_parts, config)
 
     # If no paragraph markers or article is short enough, keep as single chunk
     if len(para_matches) <= 1 or _estimate_tokens(body) <= MAX_CHUNK_TOKENS:
         hierarchy = " > ".join(hierarchy_parts)
-        header = f"EU AI Act (NL) > {hierarchy}:"
+        header = f"{config.display_name} > {hierarchy}:"
         chunk = Chunk(
             text=body,
+            source=config.source_label,
             section_type="artikel",
             chapter=chapter,
             chapter_number=chapter_num,
@@ -261,7 +330,7 @@ def _split_article_by_paragraphs(
             context_header=header,
         )
         if _estimate_tokens(body) > MAX_CHUNK_TOKENS:
-            return _split_long_text(chunk)
+            return _split_long_text(chunk, config)
         return [chunk]
 
     chunks: list[Chunk] = []
@@ -279,10 +348,11 @@ def _split_article_by_paragraphs(
             para_text = intro_text + "\n\n" + para_text
 
         hierarchy = " > ".join(hierarchy_parts) + f" > Lid {para_num}"
-        header = f"EU AI Act (NL) > {hierarchy}:"
+        header = f"{config.display_name} > {hierarchy}:"
 
         chunk = Chunk(
             text=para_text,
+            source=config.source_label,
             section_type="artikel",
             chapter=chapter,
             chapter_number=chapter_num,
@@ -296,7 +366,7 @@ def _split_article_by_paragraphs(
 
         # If still too long, do sentence-level splitting
         if _estimate_tokens(para_text) > MAX_CHUNK_TOKENS:
-            chunks.extend(_split_long_text(chunk))
+            chunks.extend(_split_long_text(chunk, config))
         else:
             chunks.append(chunk)
 
@@ -310,9 +380,11 @@ def _split_definitions(
     chapter_num: str,
     section: str,
     hierarchy_parts: list[str],
+    config: DocumentConfig,
 ) -> list[Chunk]:
-    """Split Artikel 3 (Definities) by numbered definition items."""
+    """Split a definitions article by numbered definition items."""
     chunks: list[Chunk] = []
+    def_art = config.definitions_article
     # Definitions are numbered: 1) ... 2) ... up to ~68)
     def_pattern = re.compile(r"^(\d+)\)", re.MULTILINE)
     def_matches = list(def_pattern.finditer(body))
@@ -324,14 +396,15 @@ def _split_definitions(
             hierarchy = " > ".join(hierarchy_parts) + " > Inleiding"
             chunks.append(Chunk(
                 text=intro,
+                source=config.source_label,
                 section_type="artikel",
                 chapter=chapter,
                 chapter_number=chapter_num,
                 section=section,
-                article_number=3,
+                article_number=def_art,
                 article_title=art_title,
                 hierarchy_path=hierarchy,
-                context_header=f"EU AI Act (NL) > {hierarchy}:",
+                context_header=f"{config.display_name} > {hierarchy}:",
             ))
 
     for i, dm in enumerate(def_matches):
@@ -341,15 +414,16 @@ def _split_definitions(
         def_text = body[start:end].strip()
 
         hierarchy = " > ".join(hierarchy_parts) + f" > Definitie {def_num}"
-        header = f"EU AI Act (NL) > {hierarchy}:"
+        header = f"{config.display_name} > {hierarchy}:"
 
         chunk = Chunk(
             text=def_text,
+            source=config.source_label,
             section_type="artikel",
             chapter=chapter,
             chapter_number=chapter_num,
             section=section,
-            article_number=3,
+            article_number=def_art,
             article_title=art_title,
             paragraph_number=def_num,
             hierarchy_path=hierarchy,
@@ -357,7 +431,7 @@ def _split_definitions(
         )
 
         # Merge tiny definitions with the next one
-        if _estimate_tokens(def_text) < MIN_CHUNK_TOKENS and chunks and chunks[-1].article_number == 3:
+        if _estimate_tokens(def_text) < MIN_CHUNK_TOKENS and chunks and chunks[-1].article_number == def_art:
             chunks[-1].text += "\n\n" + def_text
             chunks[-1].hierarchy_path += f", {def_num}"
         else:
@@ -370,7 +444,7 @@ def _split_definitions(
 # Annex parsing
 # ---------------------------------------------------------------------------
 
-def _parse_annexes(text: str) -> list[Chunk]:
+def _parse_annexes(text: str, config: DocumentConfig) -> list[Chunk]:
     """Parse annexes into chunks."""
     chunks: list[Chunk] = []
     annex_matches = list(RE_ANNEX.finditer(text))
@@ -386,10 +460,11 @@ def _parse_annexes(text: str) -> list[Chunk]:
         hierarchy = f"Bijlage {annex_num}"
         if annex_title:
             hierarchy += f" — {annex_title}"
-        header = f"EU AI Act (NL) > {hierarchy}:"
+        header = f"{config.display_name} > {hierarchy}:"
 
         chunk = Chunk(
             text=body,
+            source=config.source_label,
             section_type="bijlage",
             annex_number=annex_num,
             annex_title=annex_title,
@@ -399,7 +474,7 @@ def _parse_annexes(text: str) -> list[Chunk]:
 
         # Split large annexes
         if _estimate_tokens(body) > MAX_CHUNK_TOKENS:
-            chunks.extend(_split_long_text(chunk))
+            chunks.extend(_split_long_text(chunk, config))
         else:
             chunks.append(chunk)
 
@@ -414,7 +489,7 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // APPROX_CHARS_PER_TOKEN
 
 
-def _split_long_text(chunk: Chunk) -> list[Chunk]:
+def _split_long_text(chunk: Chunk, config: DocumentConfig) -> list[Chunk]:
     """Split an oversized chunk at sentence boundaries with overlap."""
     sentences = re.split(r"(?<=[.;:])\s+|\n{2,}", chunk.text)
     sentences = [s.strip() for s in sentences if s.strip()]
@@ -482,7 +557,7 @@ def _split_long_text(chunk: Chunk) -> list[Chunk]:
     if len(sub_chunks) > 1:
         for j, sc in enumerate(sub_chunks):
             sc.hierarchy_path += f" (deel {j + 1}/{len(sub_chunks)})"
-            sc.context_header = f"EU AI Act (NL) > {sc.hierarchy_path}:"
+            sc.context_header = f"{config.display_name} > {sc.hierarchy_path}:"
 
     return sub_chunks
 
@@ -536,27 +611,36 @@ def _merge_small_chunks(chunks: list[Chunk]) -> list[Chunk]:
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def chunk_document(pdf_path: Path | None = None) -> list[Chunk]:
+def chunk_document(config: DocumentConfig) -> list[Chunk]:
     """Full chunking pipeline. Returns list of Chunk objects."""
-    pdf_path = pdf_path or PDF_PATH
-    print(f"Extracting text from {pdf_path.name} ...")
-    full_text = extract_text(pdf_path)
+    print(f"\n{'='*60}")
+    print(f"Chunking: {config.display_name}")
+    print(f"  PDF: {config.pdf_path.name}")
+    print(f"  Output: {config.output_dir}")
+    print(f"{'='*60}")
+
+    print(f"Extracting text from {config.pdf_path.name} ...")
+    full_text = extract_text(config.pdf_path, config.footer_patterns)
 
     recitals_end = _find_recitals_end(full_text)
-    annexes_start = _find_annexes_start(full_text)
+    annexes_start = _find_annexes_start(full_text) if config.has_annexes else len(full_text)
 
     recitals_text = full_text[:recitals_end]
     articles_text = full_text[recitals_end:annexes_start]
-    annexes_text = full_text[annexes_start:]
+    annexes_text = full_text[annexes_start:] if config.has_annexes else ""
 
     print(f"Parsing recitals ({len(recitals_text):,} chars) ...")
-    recital_chunks = _parse_recitals(recitals_text)
+    recital_chunks = _parse_recitals(recitals_text, config)
 
     print(f"Parsing articles ({len(articles_text):,} chars) ...")
-    article_chunks = _parse_articles(articles_text)
+    article_chunks = _parse_articles(articles_text, config)
 
-    print(f"Parsing annexes ({len(annexes_text):,} chars) ...")
-    annex_chunks = _parse_annexes(annexes_text)
+    annex_chunks: list[Chunk] = []
+    if config.has_annexes and annexes_text:
+        print(f"Parsing annexes ({len(annexes_text):,} chars) ...")
+        annex_chunks = _parse_annexes(annexes_text, config)
+    else:
+        print("No annexes to parse.")
 
     all_chunks = recital_chunks + article_chunks + annex_chunks
 
@@ -572,9 +656,8 @@ def chunk_document(pdf_path: Path | None = None) -> list[Chunk]:
     return all_chunks
 
 
-def save_chunks(chunks: list[Chunk], output_dir: Path | None = None) -> None:
+def save_chunks(chunks: list[Chunk], output_dir: Path) -> None:
     """Save two JSONL files: with and without contextual headers."""
-    output_dir = output_dir or OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
     path_with = output_dir / "chunks_with_context.jsonl"
@@ -638,6 +721,19 @@ def print_stats(chunks: list[Chunk]) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    chunks = chunk_document()
-    print_stats(chunks)
-    save_chunks(chunks)
+
+    # -----------------------------------------------------------------------
+    # CONFIG: Adjust these parameters for your use case
+    # -----------------------------------------------------------------------
+
+    # Which document(s) to process: "eu_ai_act", "gdpr", or "all"
+    DOC = "all"
+
+    # -----------------------------------------------------------------------
+
+    docs = list(DOCUMENTS.keys()) if DOC == "all" else [DOC]
+    for doc_name in docs:
+        config = DOCUMENTS[doc_name]
+        chunks = chunk_document(config)
+        print_stats(chunks)
+        save_chunks(chunks, config.output_dir)
