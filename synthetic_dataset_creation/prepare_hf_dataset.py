@@ -1,8 +1,8 @@
 """
 Prepare query-chunk pairs for Hugging Face upload.
 
-Converts the JSONL format to a Hugging Face Dataset with proper schema
-and metadata for embedding fine-tuning tasks.
+Merges query pairs from multiple documents (EU AI Act, GDPR, etc.)
+into a single Hugging Face Dataset with proper schema and metadata.
 """
 
 import json
@@ -11,40 +11,62 @@ from datasets import Dataset, DatasetDict
 from collections import Counter
 
 
-def load_query_pairs(jsonl_path: str) -> list[dict]:
-    """Load query pairs from JSONL file."""
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Document configs: maps JSONL filename stem to display name
+DOCUMENT_SOURCES = {
+    "eu_ai_act_query_pairs": "EU AI Act (NL)",
+    "gdpr_query_pairs": "AVG/GDPR (NL)",
+}
+
+
+def load_query_pairs(jsonl_path: Path, document_name: str) -> list[dict]:
+    """Load query pairs from JSONL file, adding document_name to each pair."""
     pairs = []
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line in f:
-            pairs.append(json.loads(line))
+            pair = json.loads(line)
+            pair["document_name"] = document_name
+            pairs.append(pair)
     return pairs
+
+
+def load_all_pairs(synthetic_dir: Path) -> list[dict]:
+    """Load and merge query pairs from all document JSONL files."""
+    all_pairs = []
+    for stem, doc_name in DOCUMENT_SOURCES.items():
+        path = synthetic_dir / f"{stem}.jsonl"
+        if path.exists():
+            pairs = load_query_pairs(path, doc_name)
+            print(f"  Loaded {len(pairs)} pairs from {path.name}")
+            all_pairs.extend(pairs)
+        else:
+            print(f"  [SKIP] {path.name} not found")
+    return all_pairs
 
 
 def create_hf_dataset(
     pairs: list[dict],
     include_metadata: bool = True,
-    document_name: str = "EU AI Act (NL)"
 ) -> Dataset:
     """
     Convert query pairs to Hugging Face Dataset format.
-    
+
     Args:
-        pairs: List of query pair dicts
-        include_metadata: If True, include chunk_id, section_type, hierarchy_path
-        document_name: Name of the source document
-    
+        pairs: List of query pair dicts (with document_name field)
+        include_metadata: If True, include chunk_id, section_type, etc.
+
     Returns:
         Hugging Face Dataset
     """
-    # Generate unique question IDs (sequential across all pairs)
     question_ids = list(range(len(pairs)))
-    
+
     if include_metadata:
         data = {
             "question_id": question_ids,
             "query": [p["anchor"] for p in pairs],
             "chunk": [p["positive"] for p in pairs],
-            "document_name": [document_name] * len(pairs),
+            "document_name": [p["document_name"] for p in pairs],
             "chunk_id": [p["chunk_id"] for p in pairs],
             "section_type": [p["section_type"] for p in pairs],
             "hierarchy_path": [p["hierarchy_path"] for p in pairs],
@@ -54,9 +76,9 @@ def create_hf_dataset(
             "question_id": question_ids,
             "query": [p["anchor"] for p in pairs],
             "chunk": [p["positive"] for p in pairs],
-            "document_name": [document_name] * len(pairs),
+            "document_name": [p["document_name"] for p in pairs],
         }
-    
+
     return Dataset.from_dict(data)
 
 
@@ -95,76 +117,44 @@ def print_dataset_stats(dataset: Dataset):
 
 
 if __name__ == "__main__":
-    import argparse
-    
+
     # -----------------------------------------------------------------------
     # CONFIG: Adjust these parameters for your use case
     # -----------------------------------------------------------------------
-    
-    # Input JSONL file path
-    DEFAULT_INPUT = (
-        Path(__file__).resolve().parent.parent
-        / "data" / "synthetic" / "query_pairs.jsonl"
-    )
-    
+
+    # Directory containing the per-document JSONL files
+    SYNTHETIC_DIR = PROJECT_ROOT / "data" / "synthetic"
+
     # Output directory for HF dataset
-    DEFAULT_OUTPUT = (
-        Path(__file__).resolve().parent.parent
-        / "data" / "hf_dataset"
-    )
-    
+    OUTPUT_DIR = PROJECT_ROOT / "data" / "hf_dataset"
+
     # Include metadata columns (chunk_id, section_type, hierarchy_path)
     # Set to False for minimal dataset (just query + chunk)
     INCLUDE_METADATA = True
-    
+
     # -----------------------------------------------------------------------
-    
-    parser = argparse.ArgumentParser(
-        description="Prepare query-chunk pairs for Hugging Face upload"
-    )
-    parser.add_argument(
-        "--input", type=str, default=str(DEFAULT_INPUT),
-        help="Input JSONL file path"
-    )
-    parser.add_argument(
-        "--output", type=str, default=str(DEFAULT_OUTPUT),
-        help="Output directory for HF dataset"
-    )
-    parser.add_argument(
-        "--no-metadata", action="store_true",
-        help="Exclude metadata columns (minimal dataset)"
-    )
-    args = parser.parse_args()
-    
-    # Load pairs
-    print(f"Loading query pairs from: {args.input}")
-    pairs = load_query_pairs(args.input)
-    print(f"Loaded {len(pairs)} pairs")
-    
+
+    # Load and merge all document pairs
+    print(f"Loading query pairs from: {SYNTHETIC_DIR}")
+    pairs = load_all_pairs(SYNTHETIC_DIR)
+    print(f"Total: {len(pairs)} pairs")
+
+    if not pairs:
+        print("No pairs found. Run generate_queries.py first.")
+        exit(1)
+
     # Create HF dataset
-    include_metadata = INCLUDE_METADATA and not args.no_metadata
-    dataset = create_hf_dataset(pairs, include_metadata=include_metadata)
-    
+    dataset = create_hf_dataset(pairs, include_metadata=INCLUDE_METADATA)
+
     # Print stats
     print_dataset_stats(dataset)
-    
+
     # Save to disk
-    output_path = Path(args.output)
-    output_path.mkdir(parents=True, exist_ok=True)
-    dataset.save_to_disk(str(output_path))
-    print(f"\n✓ Dataset saved to: {output_path}")
-    
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    dataset.save_to_disk(str(OUTPUT_DIR))
+    print(f"\nDataset saved to: {OUTPUT_DIR}")
+
     # Also save as parquet for easy HF upload
-    parquet_path = output_path.parent / f"{output_path.name}.parquet"
+    parquet_path = OUTPUT_DIR.parent / f"{OUTPUT_DIR.name}.parquet"
     dataset.to_parquet(str(parquet_path))
-    print(f"✓ Parquet file saved to: {parquet_path}")
-    
-    print(f"\n=== Upload Instructions ===\n")
-    print("To upload to Hugging Face:")
-    print("1. Install: pip install huggingface_hub")
-    print("2. Login: huggingface-cli login")
-    print("3. Upload:")
-    print(f"   from datasets import load_from_disk")
-    print(f"   dataset = load_from_disk('{output_path}')")
-    print(f"   dataset.push_to_hub('your-username/eu-ai-act-nl-queries')")
-    print("\nOr upload the parquet file directly via the HF web UI.")
+    print(f"Parquet file saved to: {parquet_path}")

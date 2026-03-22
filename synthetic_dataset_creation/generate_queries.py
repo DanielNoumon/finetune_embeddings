@@ -65,10 +65,14 @@ Regels:
   * Procedurele vragen ("Hoe voldoe ik aan de transparantieverplichtingen?")
   * Scenariovragen ("Een bedrijf wil gezichtsherkenning inzetten, welke regels \
 gelden?")
-- BELANGRIJK: Genereer minstens 1 procedurele vraag ("Hoe...?", "Welke stappen...?") \
-en 1 scenariovraag ("Een bedrijf/organisatie wil...") per {n} queries.
-- Varieer de lengte: genereer zowel korte (30-60 tekens) als langere queries \
-(100-150 tekens).
+  * Trefwoordzoekopdrachten — korte fragmenten zonder vraagteken, zoals een \
+gebruiker in een zoekveld zou typen ("verboden AI-systemen", \
+"conformiteitsbeoordeling hoog-risico")
+- BELANGRIJK: Genereer minstens 1 procedurele vraag ("Hoe...?", \
+"Welke stappen...?"), 1 scenariovraag ("Een bedrijf/organisatie wil..."), \
+en 1 trefwoordzoekopdracht per {n} queries.
+- Varieer de lengte: mix van korte trefwoorden (20-50 tekens), middellange \
+vragen (60-100 tekens) en langere queries (100-150 tekens).
 - Query's moeten realistisch zijn — alsof een jurist, beleidsmaker of \
 compliance officer ze zou stellen.
 - Verwijs NIET letterlijk naar artikelnummers in de query (de gebruiker kent \
@@ -76,10 +80,12 @@ die nummers vaak niet).
 - Antwoord met een JSON-object met een "queries" veld.
 
 Voorbeeld output:
-{{"queries": ["AI verboden?", \
+{{"queries": ["verboden AI-systemen", \
 "Hoe voldoe ik aan de conformiteitseisen voor hoog-risico AI-systemen?", \
 "Een zorginstelling wil AI gebruiken voor diagnoses, welke verplichtingen gelden?", \
-"Wat wordt bedoeld met transparantieverplichtingen voor AI?"]}}
+"Wat wordt bedoeld met transparantieverplichtingen voor AI?", \
+"AI transparantie eisen", \
+"Welke AI-toepassingen vallen onder de hoog-risico categorie?"]}}
 """
 
 SYSTEM_PROMPT_GDPR = """\
@@ -97,10 +103,14 @@ Regels:
   * Definitievragen ("Wat zijn persoonsgegevens volgens de AVG?")
   * Procedurele vragen ("Hoe voer ik een DPIA uit?")
   * Scenariovragen ("Een webshop wil klantgedrag bijhouden, welke regels gelden?")
-- BELANGRIJK: Genereer minstens 1 procedurele vraag ("Hoe...?", "Welke stappen...?") \
-en 1 scenariovraag ("Een bedrijf/organisatie wil...") per {n} queries.
-- Varieer de lengte: genereer zowel korte (30-60 tekens) als langere queries \
-(100-150 tekens).
+  * Trefwoordzoekopdrachten — korte fragmenten zonder vraagteken, zoals een \
+gebruiker in een zoekveld zou typen ("datalek meldplicht", \
+"rechten betrokkenen AVG")
+- BELANGRIJK: Genereer minstens 1 procedurele vraag ("Hoe...?", \
+"Welke stappen...?"), 1 scenariovraag ("Een bedrijf/organisatie wil..."), \
+en 1 trefwoordzoekopdracht per {n} queries.
+- Varieer de lengte: mix van korte trefwoorden (20-50 tekens), middellange \
+vragen (60-100 tekens) en langere queries (100-150 tekens).
 - Query's moeten realistisch zijn — alsof een jurist, privacyfunctionaris (DPO), \
 beleidsmaker of compliance officer ze zou stellen.
 - Verwijs NIET letterlijk naar artikelnummers in de query (de gebruiker kent \
@@ -108,10 +118,12 @@ die nummers vaak niet).
 - Antwoord met een JSON-object met een "queries" veld.
 
 Voorbeeld output:
-{{"queries": ["Rechten van betrokkenen?", \
+{{"queries": ["datalek meldplicht", \
 "Hoe meld ik een datalek bij de toezichthouder?", \
 "Een ziekenhuis wil patiëntgegevens delen met een onderzoeksinstelling, mag dat?", \
-"Wat houdt het recht op vergetelheid in volgens de privacywet?"]}}
+"Wat houdt het recht op vergetelheid in volgens de privacywet?", \
+"rechten betrokkenen AVG", \
+"Wanneer moet een organisatie een functionaris gegevensbescherming aanstellen?"]}}
 """
 
 USER_PROMPT_EU_AI_ACT = """\
@@ -327,7 +339,7 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
 
     # Which document(s) to process: "eu_ai_act", "gdpr", or "all"
-    DOC = "gdpr"
+    DOC = "all"
 
     # --- LLM endpoint (OpenAI-compatible: Ollama, vLLM, Azure, etc.) ---
     # Set LLM_BASE_URL and LLM_MODEL in your .env file
@@ -338,7 +350,7 @@ if __name__ == "__main__":
     # Number of queries to generate per chunk
     # Higher = more training data, but diminishing returns beyond 5
     # Typical range: 3-5 queries per chunk
-    QUERIES_PER_CHUNK = 4
+    QUERIES_PER_CHUNK = 6
 
     # Limit number of chunks to process (for testing). None = all chunks
     MAX_CHUNKS = None
