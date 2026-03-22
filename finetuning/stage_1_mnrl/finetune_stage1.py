@@ -25,7 +25,10 @@ from sentence_transformers import (
     SentenceTransformerTrainer,
     SentenceTransformerTrainingArguments,
 )
-from sentence_transformers.losses import MultipleNegativesRankingLoss
+from sentence_transformers.losses import (
+    MatryoshkaLoss,
+    MultipleNegativesRankingLoss,
+)
 from sentence_transformers.training_args import BatchSamplers
 from sentence_transformers.evaluation import (
     InformationRetrievalEvaluator,
@@ -133,9 +136,14 @@ def build_evaluators(
     return eval_suite, primary_metric
 
 
-def build_loss(model):
-    """Build plain MNRL loss (no Matryoshka)."""
-    return MultipleNegativesRankingLoss(model)
+def build_loss(model, matryoshka_dims=None):
+    """Build MNRL loss, optionally wrapped in MatryoshkaLoss."""
+    inner = MultipleNegativesRankingLoss(model)
+    if matryoshka_dims:
+        return MatryoshkaLoss(
+            model, inner, matryoshka_dims=matryoshka_dims
+        )
+    return inner
 
 
 def print_summary(
@@ -210,24 +218,25 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------
     PROJECT_ROOT    = Path(__file__).resolve().parent.parent.parent
 
-    MODEL_NAME      = "intfloat/multilingual-e5-large-instruct"
+    MODEL_NAME      = "intfloat/multilingual-e5-large"
     TRAIN_DIR       = PROJECT_ROOT / "data" / "processed" / "train"
     EVAL_DIR        = PROJECT_ROOT / "data" / "processed" / "eval"
     OUTPUT_DIR      = PROJECT_ROOT / "models" / "stage_1_mnrl"
-    INSTRUCT        = True
+    INSTRUCT        = False
     INSTRUCT_PREFIX = (
         "Instruct: Given a question about EU AI regulation, "
         "retrieve the most relevant passage\nQuery: "
     )
 
     BATCH_SIZE      = 16
-    GRAD_ACCUM      = 8
+    GRAD_ACCUM      = 4
     EVAL_BATCH_SIZE = 4
     EPOCHS          = 3
-    LR              = 1e-6
-    WARMUP_STEPS    = 3
-    MAX_GRAD_NORM   = 0.3
+    LR              = 2e-5
+    WARMUP_RATIO    = 0.1
+    MAX_GRAD_NORM   = 1.0
     WEIGHT_DECAY    = 0.01
+    USE_MATRYOSHKA  = True
     MATRYOSHKA_DIMS = [1024, 768, 512, 256, 128, 64]
 
     # -------------------------------------------------------------------
@@ -264,7 +273,10 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------
     # Train
     # -------------------------------------------------------------------
-    loss = build_loss(model)
+    loss = build_loss(
+        model,
+        matryoshka_dims=MATRYOSHKA_DIMS if USE_MATRYOSHKA else None,
+    )
 
     training_args = SentenceTransformerTrainingArguments(
         output_dir=str(OUTPUT_DIR),
@@ -273,7 +285,7 @@ if __name__ == "__main__":
         per_device_eval_batch_size=EVAL_BATCH_SIZE,
         gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
-        warmup_steps=WARMUP_STEPS,
+        warmup_ratio=WARMUP_RATIO,
         max_grad_norm=MAX_GRAD_NORM,
         weight_decay=WEIGHT_DECAY,
         fp16=use_fp16,
