@@ -12,7 +12,7 @@ tags:
 - loss:CachedMultipleNegativesRankingLoss
 base_model: Qwen/Qwen3-Embedding-0.6B
 datasets:
-- custom
+- danielnoumon/eu-ai-act-nl-queries
 metrics:
 - cosine_ndcg@10
 - cosine_mrr@10
@@ -37,7 +37,7 @@ Fine-tuned **Qwen3-Embedding-0.6B** for Dutch/English retrieval on EU AI Act doc
   - **Stage 2**: CachedMNRL + Matryoshka with hard negatives mined from Stage 1 model
 - **Dataset**: 1,944 synthetic queries generated from EU AI Act chunks (Dutch/English)
 - **Hardware**: NVIDIA RTX 5090 (32GB VRAM, Blackwell)
-- **Precision**: bf16 + SDPA (stable on Blackwell, unlike e5-large which required fp32)
+- **Precision**: bf16 + SDPA
 
 ## Performance
 
@@ -53,16 +53,6 @@ Evaluated on 340 held-out queries across 85 chunks. All metrics measured with co
 | 256 | 0.7691 | 0.9343 | **0.9412** | +0.1721 |
 | 128 | 0.7358 | 0.9154 | **0.9163** | +0.1805 |
 | 64 | 0.6727 | 0.8907 | 0.8854 | +0.2127 |
-
-### Comparison with e5-large fine-tuned
-
-| Stage | Qwen3-0.6B | e5-large (best) | Gap |
-|-------|-----------|-----------------|-----|
-| Zero-shot | 0.8013 | 0.8612 | -0.0599 |
-| Stage 1 | 0.9419 | 0.9436 | -0.0017 |
-| **Stage 2** | **0.9467** | **0.9492** | **-0.0025** |
-
-Despite starting 6% lower zero-shot, the 0.6B decoder model nearly matches the 560M encoder model after fine-tuning (gap: 0.25%).
 
 ### Full metrics at dim=1024
 
@@ -90,7 +80,7 @@ pip install sentence-transformers>=2.7.0 transformers>=4.51.0
 ```python
 from sentence_transformers import SentenceTransformer
 
-model = SentenceTransformer("DanielNoumon/qwen3-embedding-0.6b-ai-act-nl")
+model = SentenceTransformer("danielnoumon/qwen3-embedding-0.6b-ai-act-nl")
 
 # Qwen3 uses instruct prompts for queries, no prefix for documents
 queries = model.encode(
@@ -164,14 +154,15 @@ doc_emb = model.encode(["your document here"])
 
 ### Dataset
 
+- **Dataset**: [danielnoumon/eu-ai-act-nl-queries](https://huggingface.co/datasets/danielnoumon/eu-ai-act-nl-queries)
 - **Train**: 1,944 synthetic query-chunk pairs
 - **Eval**: 340 queries x 85 chunks
 - **Split strategy**: Chunk-level (no chunk appears in both train and eval)
-- **Query generation**: Azure OpenAI GPT-5-mini with structured prompts
+- **Query generation**: Azure OpenAI GPT-4o-mini with structured prompts
 
 ### Hardware Notes
 
-- **bf16 works on Blackwell (RTX 5090)** with Qwen3 — unlike e5-large which required fp32 due to gradient explosion
+- **bf16 works on Blackwell (RTX 5090)** with Qwen3
 - Qwen3's RMSNorm upcasts to fp32 internally, limiting micro-batch size
 - CachedMNRL (GradCache) essential for fitting large contrastive pools in 32GB VRAM
 - flash_attention_2 recommended but not required (sdpa works as fallback)
