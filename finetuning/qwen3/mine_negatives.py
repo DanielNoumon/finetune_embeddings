@@ -130,16 +130,26 @@ if __name__ == "__main__":
         print(f"  GPU: {gpu_name} ({gpu_mem:.1f} GB)")
 
     print(f"\nLoading Stage 1 model: {MODEL_NAME}")
-    model_kwargs = {}
+    model = None
     if device == "cuda":
-        model_kwargs["model_kwargs"] = {
-            "torch_dtype": torch.bfloat16,
-            "attn_implementation": "flash_attention_2",
-        }
-        model_kwargs["tokenizer_kwargs"] = {
-            "padding_side": "left",
-        }
-    model = SentenceTransformer(MODEL_NAME, **model_kwargs)
+        for attn in ["flash_attention_2", "sdpa", "eager"]:
+            try:
+                print(f"  Trying {attn}...")
+                model = SentenceTransformer(
+                    MODEL_NAME,
+                    model_kwargs={
+                        "torch_dtype": torch.bfloat16,
+                        "attn_implementation": attn,
+                    },
+                    tokenizer_kwargs={"padding_side": "left"},
+                )
+                print(f"  Loaded with {attn} + bf16")
+                break
+            except (ImportError, ValueError) as e:
+                print(f"  {attn} failed: {e}")
+                continue
+    if model is None:
+        model = SentenceTransformer(MODEL_NAME)
 
     train_dataset = load_from_disk(str(TRAIN_DIR))
     print(f"Loading train dataset from: {TRAIN_DIR}")

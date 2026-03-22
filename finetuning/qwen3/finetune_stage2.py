@@ -72,29 +72,41 @@ def detect_device():
     return device, use_fp16, use_bf16
 
 
-def load_model(model_name):
-    """Load Qwen3-Embedding with flash_attention_2 + bf16."""
+def load_model(
+    model_name,
+    card_name="Qwen3-Embedding-0.6B EU AI Act NL Hard Neg Matryoshka",
+):
+    """Load Qwen3-Embedding with bf16, trying attention backends."""
     print(f"\nLoading model: {model_name}")
-    kwargs = {}
-    if torch.cuda.is_available():
-        kwargs["model_kwargs"] = {
-            "torch_dtype": torch.bfloat16,
-            "attn_implementation": "flash_attention_2",
-        }
-        kwargs["tokenizer_kwargs"] = {"padding_side": "left"}
-
-    return SentenceTransformer(
-        model_name,
-        **kwargs,
-        model_card_data=SentenceTransformerModelCardData(
-            language="nl",
-            license="apache-2.0",
-            model_name=(
-                "Qwen3-Embedding-0.6B EU AI Act NL "
-                "Hard Neg Matryoshka"
-            ),
-        ),
+    card = SentenceTransformerModelCardData(
+        language="nl",
+        license="apache-2.0",
+        model_name=card_name,
     )
+    if not torch.cuda.is_available():
+        return SentenceTransformer(
+            model_name, model_card_data=card,
+        )
+
+    for attn in ["flash_attention_2", "sdpa", "eager"]:
+        try:
+            print(f"  Trying {attn}...")
+            model = SentenceTransformer(
+                model_name,
+                model_kwargs={
+                    "torch_dtype": torch.bfloat16,
+                    "attn_implementation": attn,
+                },
+                tokenizer_kwargs={"padding_side": "left"},
+                model_card_data=card,
+            )
+            print(f"  Loaded with {attn} + bf16")
+            return model
+        except (ImportError, ValueError) as e:
+            print(f"  {attn} failed: {e}")
+            continue
+
+    raise RuntimeError("All attention backends failed.")
 
 
 def build_evaluators(
