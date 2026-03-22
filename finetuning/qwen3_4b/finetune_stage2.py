@@ -297,7 +297,7 @@ if __name__ == "__main__":
 
     # Stage 2: lower LR, fewer epochs to avoid catastrophic forgetting
     BATCH_SIZE = 128
-    MINI_BATCH_SIZE = 2   # 4B needs small mini-batches
+    MINI_BATCH_SIZE = 1   # Stage 2 has 3 cols (anchor+pos+neg) — halve mini-batch vs Stage 1
     GRAD_ACCUM = 1
     EVAL_BATCH_SIZE = 2
     EPOCHS = 2
