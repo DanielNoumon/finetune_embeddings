@@ -248,9 +248,9 @@ if __name__ == "__main__":
     # Qwen3 RMSNorm upcasts to fp32 internally, limiting batch size.
     # Use CachedMNRL to get large contrastive pool with small VRAM.
     BATCH_SIZE = 128
-    MINI_BATCH_SIZE = 16
+    MINI_BATCH_SIZE = 4
     GRAD_ACCUM = 1
-    EVAL_BATCH_SIZE = 16
+    EVAL_BATCH_SIZE = 4
     EPOCHS = 3
     LR = 2e-5
     WARMUP_RATIO = 0.1

@@ -240,9 +240,9 @@ if __name__ == "__main__":
 
     # Stage 2: lower LR, fewer epochs, CachedMNRL for VRAM
     BATCH_SIZE = 128
-    MINI_BATCH_SIZE = 16
+    MINI_BATCH_SIZE = 4
     GRAD_ACCUM = 1
-    EVAL_BATCH_SIZE = 16
+    EVAL_BATCH_SIZE = 4
     EPOCHS = 2
     LR = 1e-5
     WARMUP_RATIO = 0.1
