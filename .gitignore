@@ -60,5 +60,4 @@ data/processed/
 models/
 checkpoints/
 runs/
-# model_cards/
-learnings/
+model_cards/
