@@ -18,12 +18,16 @@ Fine-tunes multilingual embedding models for semantic search and retrieval on th
 │   ├── view_dataset.py         # Dataset viewer utility
 │   └── analyze_queries.py      # Query quality analysis
 ├── finetuning/
-│   ├── stage_1_mnrl/           # Stage 1: in-batch negatives (MNRL)
+│   ├── e5_large_stage1/        # e5-large: Stage 1 (MNRL)
 │   │   ├── finetune_stage1.py
 │   │   ├── diagnose.py         # Precision/attention diagnostics
 │   │   └── diagnose_instructions.py
-│   └── stage_2_hard_neg/       # Stage 2: mined hard negatives
-│       ├── mine_negatives.py
+│   ├── e5_large_stage2/        # e5-large: Stage 2 (hard negatives)
+│   │   ├── mine_negatives.py
+│   │   └── finetune_stage2.py
+│   └── qwen3/                  # Qwen3-Embedding-0.6B
+│       ├── eval_baseline.py    # Zero-shot evaluation
+│       ├── finetune_stage1.py
 │       └── finetune_stage2.py
 ├── upload_to_hf/
 │   ├── upload_dataset.py       # Upload dataset to HuggingFace
@@ -55,15 +59,18 @@ Converts query pairs to HuggingFace Dataset format with train/eval splits.
 
 ### 4. Fine-tuning
 
-**Stage 1** — In-batch negatives with MatryoshkaLoss:
+**e5-large:**
 ```bash
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/stage_1_mnrl/finetune_stage1.py
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/e5_large_stage1/finetune_stage1.py
+python finetuning/e5_large_stage2/mine_negatives.py
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/e5_large_stage2/finetune_stage2.py
 ```
 
-**Stage 2** — Mine hard negatives, then fine-tune with explicit negatives:
+**Qwen3-Embedding-0.6B:**
 ```bash
-python finetuning/stage_2_hard_neg/mine_negatives.py
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/stage_2_hard_neg/finetune_stage2.py
+python finetuning/qwen3/eval_baseline.py
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/qwen3/finetune_stage1.py
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/qwen3/finetune_stage2.py
 ```
 
 ### 5. Upload to HuggingFace

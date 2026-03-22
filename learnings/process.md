@@ -531,3 +531,172 @@ models/
 ```
 
 The Stage 2 model at `models/stage_2_hard_neg/final/` is the final production model.
+
+---
+
+## Step 7 — RTX 5090 Reproduction
+
+### Goal
+
+Reproduce the Colab results on a local RTX 5090 (32GB VRAM, Blackwell architecture) to isolate whether an instruct model underperformance was caused by the model itself or GPU-specific numerical issues.
+
+### Hardware constraints discovered
+
+The RTX 5090 (Blackwell, sm_120) exposed several critical issues that don't occur on Colab's T4/A100:
+
+1. **bf16 causes immediate embedding collapse** — gradient norms spike to 500-4000+ within the first few steps, all cosine similarities converge to 1.0. This happens with both SDPA and eager attention.
+2. **SDPA is partially unstable** — even in fp32, SDPA shows occasional gradient instability on Blackwell.
+3. **Gradient checkpointing causes numerical collapse** — recomputation through transformer layers introduces enough numerical drift to destabilize training.
+
+**Working config:** fp32 + eager attention + no gradient checkpointing.
+
+### Batch size impact
+
+fp32 uses 2× the VRAM of fp16/bf16, severely limiting batch sizes:
+
+| Config | Max micro-batch on 32GB |
+|--------|------------------------|
+| MatryoshkaLoss (2 columns) | 8 |
+| MatryoshkaLoss + hard neg (3 columns) | 4 |
+
+With batch 8, each query sees only **7 in-batch negatives** (vs 63 on Colab with batch 64). We used gradient accumulation to maintain the same effective batch for optimizer updates, but gradient accumulation does NOT increase in-batch negatives — it just averages gradients across separate forward passes.
+
+### Results: RTX 5090 vs Colab
+
+| Config | Stage 1 NDCG@10 | Stage 2 NDCG@10 |
+|--------|----------------|----------------|
+| Colab T4 (batch 64, fp16, SDPA) | 0.9436 | 0.9465 |
+| RTX 5090 (batch 8, fp32, eager) | 0.9327 | **0.9492** |
+
+**Key finding:** Despite only 7 in-batch negatives (vs 63), the RTX 5090 produced the **best overall Stage 2 result** (0.9492). The Stage 1 gap (0.9327 vs 0.9436) is explained by fewer negatives, but Stage 2 hard negatives compensated strongly (+0.0165 on RTX vs +0.0029 on Colab).
+
+**Hypothesis formed:** With fewer in-batch negatives in Stage 1, the model has more room to improve from hard negatives in Stage 2. The pipeline converges to similar quality regardless of Stage 1 batch size.
+
+---
+
+## Step 8 — GradCache: Decoupling Batch Size from VRAM
+
+### Motivation
+
+The RTX 5090's batch-8 limitation (7 in-batch negatives) was a concern. Industry literature recommends 64-128 in-batch negatives for contrastive learning. Could we get more negatives without more VRAM?
+
+### CachedMultipleNegativesRankingLoss (GradCache)
+
+GradCache decouples the contrastive pool size from GPU memory by splitting the forward pass:
+
+1. **Embed** all N samples in small mini-batches **without gradients** (cheap, no computation graph stored)
+2. **Compute loss** on the full N×N similarity matrix (tiny — just floats)
+3. **Re-embed** in small mini-batches **with gradients**, using cached gradient signals from step 2
+
+This means:
+- `per_device_train_batch_size = 128` → 127 in-batch negatives (contrastive quality)
+- `mini_batch_size = 4` → only 4 samples in VRAM at a time (memory safety)
+- `gradient_accumulation_steps = 1` → no longer needed since GradCache handles the accumulation internally
+
+Trade-off: ~20-30% slower (every sample is embedded twice), but allows arbitrarily large contrastive pools.
+
+### VRAM tuning: mini_batch_size
+
+With fp32 + eager attention + 6 Matryoshka dims, finding the right mini_batch_size required trial and error:
+
+| mini_batch_size | Result |
+|----------------|--------|
+| 32 | OOM (during backward re-embed) |
+| 16 | OOM (just barely — 256 MiB short) |
+| 4 | Fits ✅ |
+
+MatryoshkaLoss runs 6 GradCache cycles (one per dimension), and each cycle's re-embed step holds a computation graph. With mini_batch_size=4, each re-embed processes 4 samples — comparable VRAM to the old batch-4 config.
+
+### Results
+
+| Config | In-batch neg | Stage 1 | Stage 2 (1 hard neg) |
+|--------|-------------|---------|---------------------|
+| RTX batch 8, standard MNRL | 7 | 0.9327 | **0.9492** ✅ |
+| RTX batch 128, CachedMNRL | 127 | 0.9422 | 0.9463 |
+| Colab batch 64, standard MNRL | 63 | 0.9436 | 0.9465 |
+
+### Analysis
+
+1. **More in-batch negatives clearly help Stage 1:** 7 neg → 0.9327, 63 neg → 0.9436, 127 neg → 0.9422. The jump from 7 to 63 is significant (+1.1%), but 63→127 shows **diminishing returns** (and is slightly lower, possibly due to fp32 vs fp16 differences).
+
+2. **Stage 2 hard negatives are a great equalizer:** Regardless of how many in-batch negatives Stage 1 had, the pipeline totals converge:
+   - Batch 8 pipeline: 0.9327 → 0.9492 (S2 adds +0.0165)
+   - Batch 128 pipeline: 0.9422 → 0.9463 (S2 adds +0.0041)
+   - Colab pipeline: 0.9436 → 0.9465 (S2 adds +0.0029)
+
+3. **Inverse relationship:** The weaker Stage 1 is, the more Stage 2 gains. Hard negatives fill in exactly what in-batch negatives missed.
+
+4. **The simplest config won:** Batch 8 with standard MNRL → 1 hard negative produced the best final result (0.9492). This was unexpected but makes sense — with few in-batch negatives, the model is "hungrier" for the targeted signal that hard negatives provide.
+
+5. **Practical implication:** For small datasets (~2000 samples), investing in GradCache complexity isn't worth it. The standard MNRL → hard negative pipeline is sufficient.
+
+---
+
+## Step 9 — Hard Negative Count Experiments
+
+### Motivation
+
+Since hard negatives provided the biggest Stage 2 gain with the batch-8 config, could we amplify that by mining **more** hard negatives per query?
+
+### Setup
+
+Updated `mine_negatives.py` to output multiple negative columns (`negative_1` through `negative_N`) instead of repeating rows. Updated `finetune_stage2.py` to dynamically detect and prompt all `negative_*` columns.
+
+Tested with the CachedMNRL Stage 1 checkpoint (0.9422) since it was the most recent:
+
+| Hard negatives | Stage 1 | Stage 2 | Δ (S1→S2) |
+|---------------|---------|---------|-----------|
+| 1 | 0.9422 | 0.9463 | +0.0041 |
+| 5 | 0.9422 | 0.9398 | **-0.0025** |
+
+### Analysis: 5 hard negatives caused regression
+
+5 hard negatives **hurt** performance (0.9463 → 0.9398, -0.7%). Why?
+
+1. **Overfitting to hard negatives:** With 5 hard negatives per query in a 1,944-sample dataset, the model sees 9,720 negative pairs. Combined with 127 in-batch negatives, this is an overwhelming amount of negative signal relative to the dataset size — the model over-corrects.
+
+2. **Diminishing quality of deeper negatives:** The top-1 hard negative is genuinely confusing (high similarity but wrong). The top-5 includes progressively less informative negatives — they're hard enough to distract the model but not informative enough to teach useful distinctions.
+
+3. **Signal imbalance:** Each query has 1 positive but 5 hard negatives + 127 in-batch negatives = 132 negatives. The positive signal is drowned out.
+
+4. **Recall@10 dropped** from 0.9912 to 0.9853 — the model started ranking some correct chunks outside the top 10, indicating it learned to be "too suspicious" of similar passages.
+
+### Key takeaway
+
+For this dataset size (~2000 pairs), **1 hard negative is the sweet spot.** The quality of the hardest negative matters more than the quantity. This aligns with the literature: most embedding fine-tuning papers use 1-3 hard negatives, and the sentence-transformers documentation defaults to 1.
+
+---
+
+## Summary: What Worked, What Didn't
+
+### Final results table (all experiments, dim=1024 NDCG@10)
+
+| # | Config | In-batch neg | Hard neg | Stage 1 | Stage 2 | Notes |
+|---|--------|-------------|----------|---------|---------|-------|
+| 1 | Colab T4, batch 64, fp16 | 63 | 1 | 0.9436 | 0.9465 | Original baseline |
+| 2 | RTX 5090, batch 8, fp32 | 7 | 1 | 0.9327 | **0.9492** | **Best overall** |
+| 3 | RTX 5090, CachedMNRL batch 128, fp32 | 127 | 1 | 0.9422 | 0.9463 | GradCache experiment |
+| 4 | RTX 5090, CachedMNRL batch 128, fp32 | 127 | 5 | 0.9422 | 0.9398 | Regression — too many negatives |
+
+### What worked
+- **Two-stage pipeline (MNRL → hard negatives):** Consistent +3-8% improvement from hard negatives
+- **MatryoshkaLoss:** Minimal overhead, massive benefit at lower dims (dim=64 retains 96% of dim=1024)
+- **fp32 + eager attention on Blackwell:** Stable training despite bf16/SDPA being the recommended setup
+- **1 hard negative per query:** Sweet spot for this dataset size
+- **Small batch → hard neg compensation:** Even batch 8 (7 in-batch negatives) reaches near-optimal quality after Stage 2
+
+### What didn't work (but was informative)
+- **bf16 on RTX 5090:** Immediate embedding collapse — Blackwell-specific issue
+- **Gradient checkpointing on RTX 5090:** Numerical drift causes training instability
+- **128 in-batch negatives (GradCache):** Better Stage 1 but diminishing returns after Stage 2 — not worth the complexity
+- **5 hard negatives:** Regression from overfitting — 1 is enough for ~2000 samples
+
+### Remaining improvement levers
+1. **More/better training data** — the biggest lever. Current dataset is only 2,284 pairs from 573 chunks of a single document. More diverse queries, more documents, or better query quality would help most.
+2. **Larger base model** — Qwen2.5 Embedding 7B (7.6B params) vs e5-large (560M params). More parameters can capture finer distinctions, especially with adequate training data.
+3. **Cross-encoder reranking** — a 2-stage retrieval pipeline where the embedding model retrieves candidates and a cross-encoder reranks them. Orthogonal to embedding quality.
+4. **Knowledge distillation** — train a smaller model to mimic a larger model's rankings. Useful for production deployment.
+
+### Best model for production
+
+The **batch-8 standard MNRL pipeline** (experiment #2) at **NDCG@10 = 0.9492** remains the best result. The model is saved at `models/stage_2_hard_neg/final/` from that run.
