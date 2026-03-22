@@ -33,6 +33,7 @@ from sentence_transformers import (
     SentenceTransformerTrainingArguments,
 )
 from sentence_transformers.losses import (
+    CachedMultipleNegativesRankingLoss,
     MatryoshkaLoss,
     MultipleNegativesRankingLoss,
 )
@@ -147,9 +148,19 @@ def build_evaluators(
     return eval_suite, primary_metric
 
 
-def build_loss(model, matryoshka_dims=None):
-    """Build MNRL loss, optionally wrapped in MatryoshkaLoss."""
-    inner = MultipleNegativesRankingLoss(model)
+def build_loss(model, matryoshka_dims=None, mini_batch_size=None):
+    """Build MNRL loss, optionally cached and/or wrapped in MatryoshkaLoss.
+
+    When mini_batch_size is set, uses CachedMultipleNegativesRankingLoss
+    (GradCache) so that per_device_train_batch_size controls the number
+    of in-batch negatives while mini_batch_size controls VRAM usage.
+    """
+    if mini_batch_size:
+        inner = CachedMultipleNegativesRankingLoss(
+            model, mini_batch_size=mini_batch_size,
+        )
+    else:
+        inner = MultipleNegativesRankingLoss(model)
     if matryoshka_dims:
         return MatryoshkaLoss(
             model, inner, matryoshka_dims=matryoshka_dims
@@ -239,8 +250,9 @@ if __name__ == "__main__":
         "retrieve the most relevant passage\nQuery: "
     )
 
-    BATCH_SIZE      = 4
-    GRAD_ACCUM      = 16
+    BATCH_SIZE      = 128
+    MINI_BATCH_SIZE = 32
+    GRAD_ACCUM      = 1
     EVAL_BATCH_SIZE = 4
     EPOCHS          = 2
     LR              = 1e-5
@@ -298,6 +310,7 @@ if __name__ == "__main__":
     loss = build_loss(
         model,
         matryoshka_dims=MATRYOSHKA_DIMS if USE_MATRYOSHKA else None,
+        mini_batch_size=MINI_BATCH_SIZE,
     )
 
     training_args = SentenceTransformerTrainingArguments(
@@ -341,6 +354,8 @@ if __name__ == "__main__":
     effective_batch = BATCH_SIZE * GRAD_ACCUM
     steps_per_epoch = len(train_dataset) // effective_batch
     print(f"\nStarting Stage 2 training for {EPOCHS} epochs...")
+    print(f"  Batch (contrastive pool): {BATCH_SIZE} ({BATCH_SIZE - 1} in-batch negatives)")
+    print(f"  Mini-batch (VRAM): {MINI_BATCH_SIZE}")
     print(f"  Effective batch: {BATCH_SIZE} x {GRAD_ACCUM} = {effective_batch}")
     print(f"  Steps per epoch: ~{steps_per_epoch}")
     print(f"  Total steps:     ~{steps_per_epoch * EPOCHS}")
