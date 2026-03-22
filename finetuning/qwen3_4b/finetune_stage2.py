@@ -190,6 +190,64 @@ def build_evaluators(
     return eval_suite, primary_metric
 
 
+def select_and_save_best_checkpoint(
+    output_dir: Path,
+    stage1_dir: Path,
+    base_model_name: str,
+    eval_suite,
+    primary_metric: str,
+    final_path: Path,
+) -> dict:
+    """Evaluate all saved checkpoints, save the best merged model.
+
+    Each checkpoint only stores the LoRA adapter (not base weights).
+    We reload Stage 1, apply the checkpoint adapter, evaluate, and keep
+    whichever checkpoint scores highest on primary_metric.
+
+    Returns the eval results dict for the best checkpoint.
+    """
+    ckpt_dirs = sorted(
+        [d for d in output_dir.iterdir()
+         if d.is_dir() and d.name.startswith("checkpoint-")],
+        key=lambda d: int(d.name.split("-")[1]),
+    )
+    if not ckpt_dirs:
+        raise RuntimeError(f"No checkpoints found in {output_dir}")
+
+    best_score = -1.0
+    best_results = None
+
+    for ckpt_dir in ckpt_dirs:
+        adapter_dir = ckpt_dir / "0_Transformer"
+        if not (adapter_dir / "adapter_config.json").exists():
+            print(f"  Skipping {ckpt_dir.name}: no adapter_config.json")
+            continue
+
+        print(f"\nEvaluating {ckpt_dir.name}...")
+        ckpt_model = load_stage1_model(stage1_dir, base_model_name)
+        inner = ckpt_model[0].auto_model
+        peft_model = PeftModel.from_pretrained(inner, str(adapter_dir))
+        ckpt_model[0].auto_model = peft_model
+
+        results = eval_suite(ckpt_model)
+        score = results[primary_metric]
+        print(f"  {primary_metric}: {score:.4f}")
+
+        if score > best_score:
+            best_score = score
+            best_results = results
+            merged = peft_model.merge_and_unload()
+            ckpt_model[0].auto_model = merged
+            ckpt_model.save_pretrained(str(final_path))
+            print(f"  New best ({score:.4f}) → saved to {final_path}")
+
+        del ckpt_model
+        torch.cuda.empty_cache()
+
+    print(f"\nBest checkpoint: {primary_metric} = {best_score:.4f}")
+    return best_results
+
+
 def build_loss(model, matryoshka_dims, mini_batch_size):
     """Build CachedMNRL + MatryoshkaLoss."""
     inner = CachedMultipleNegativesRankingLoss(
@@ -394,7 +452,7 @@ if __name__ == "__main__":
         eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=2,
-        load_best_model_at_end=True,
+        load_best_model_at_end=False,  # handled manually below (PEFT key mismatch)
         metric_for_best_model=primary_metric,
         logging_steps=5,
         logging_first_step=True,
@@ -425,13 +483,21 @@ if __name__ == "__main__":
     trainer.train()
 
     # -------------------------------------------------------------------
-    # Final evaluation & save
+    # Select best checkpoint, merge LoRA, save
     # -------------------------------------------------------------------
-    print("\nEvaluating Stage 2 model at all Matryoshka dims...")
-    final_results = eval_suite(model)
-
+    # load_best_model_at_end=True is broken for PEFT-inside-ST (key name
+    # mismatch). We manually reload each epoch checkpoint, evaluate, and
+    # save the best merged model.
     final_path = OUTPUT_DIR / "final"
-    model.save_pretrained(str(final_path))
-    print(f"\nModel saved to: {final_path}")
+    print("\nSelecting best checkpoint across all epochs...")
+    final_results = select_and_save_best_checkpoint(
+        output_dir=OUTPUT_DIR,
+        stage1_dir=STAGE1_DIR,
+        base_model_name=BASE_MODEL_NAME,
+        eval_suite=eval_suite,
+        primary_metric=primary_metric,
+        final_path=final_path,
+    )
+    print(f"\nFinal model saved to: {final_path}")
 
     print_summary(base_results, final_results, MATRYOSHKA_DIMS)
