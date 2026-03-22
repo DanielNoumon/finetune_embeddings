@@ -227,8 +227,8 @@ if __name__ == "__main__":
     OUTPUT_DIR      = PROJECT_ROOT / "models" / "stage_2_hard_neg"
     INSTRUCT        = True
     INSTRUCT_PREFIX = (
-        "Instruct: Given a question about EU AI regulation, "
-        "retrieve the most relevant passage\nQuery: "
+        "Instruct: Retrieve the most relevant passage "
+        "for this query\nQuery: "
     )
 
     BATCH_SIZE      = 8

@@ -140,8 +140,8 @@ if __name__ == "__main__":
     BATCH_SIZE   = 64
     INSTRUCT     = True
     INSTRUCT_PREFIX = (
-        "Instruct: Given a question about EU AI regulation, "
-        "retrieve the most relevant passage\nQuery: "
+        "Instruct: Retrieve the most relevant passage "
+        "for this query\nQuery: "
     )
 
     # -------------------------------------------------------------------
