@@ -278,14 +278,21 @@ if __name__ == "__main__":
     print(f"Columns: {train_dataset.column_names}")
 
     # Verify the dataset has the expected columns
-    expected_cols = {"anchor", "positive", "negative"}
     actual_cols = set(train_dataset.column_names)
-    if not expected_cols.issubset(actual_cols):
-        missing = expected_cols - actual_cols
+    if "anchor" not in actual_cols or "positive" not in actual_cols:
         raise ValueError(
-            f"Dataset missing columns: {missing}. "
-            f"Run mine_negatives.py first."
+            "Dataset missing anchor/positive columns. "
+            "Run mine_negatives.py first."
         )
+    neg_cols = sorted(
+        [c for c in actual_cols if c.startswith("negative")]
+    )
+    if not neg_cols:
+        raise ValueError(
+            "Dataset has no negative columns. "
+            "Run mine_negatives.py first."
+        )
+    print(f"  Hard negative columns: {neg_cols}")
 
     queries, corpus, relevant_docs = load_eval_data(EVAL_DIR)
     print(f"Eval queries: {len(queries)}, corpus: {len(corpus)}")
@@ -329,7 +336,7 @@ if __name__ == "__main__":
         prompts={
             "anchor": query_prompt,
             "positive": corpus_prompt,
-            "negative": corpus_prompt,
+            **{col: corpus_prompt for col in neg_cols},
         },
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         eval_strategy="epoch",

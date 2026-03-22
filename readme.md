@@ -84,11 +84,12 @@ uv run python upload_to_hf/upload_readme.py --repo-id "username/dataset-name"
 
 Base model: `intfloat/multilingual-e5-large` — NDCG@10 on held-out eval set:
 
-| Stage | NDCG@10 | Δ from base |
-|-------|---------|-------------|
-| Base (zero-shot) | 0.8612 | — |
-| Stage 1 (MNRL + MatryoshkaLoss) | 0.9327 | +0.0715 |
-| Stage 2 (+ hard negatives) | **0.9492** | **+0.0880** |
+| Config | Stage 1 | Stage 2 | Δ from base |
+|--------|---------|---------|-------------|
+| Batch 8 (standard MNRL) | 0.9327 | **0.9492** | **+0.0880** |
+| Batch 128 (CachedMNRL / GradCache) | 0.9422 | 0.9463 | +0.0851 |
+
+Base NDCG@10: 0.8612. More in-batch negatives improve Stage 1 but show diminishing returns after Stage 2 hard negatives.
 
 ## Configuration
 

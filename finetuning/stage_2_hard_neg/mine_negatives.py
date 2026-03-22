@@ -7,7 +7,8 @@ similar chunks that are NOT the correct positive. These "hard negatives"
 are passages the model finds similar but are actually wrong — the
 hardest cases for the model to distinguish.
 
-Output: a new HuggingFace Dataset with columns (anchor, positive, negative)
+Output: a new HuggingFace Dataset with columns
+(anchor, positive, negative_1, negative_2, ..., negative_N)
 that can be used for Stage 2 MNRL training.
 
 Why mine from the Stage 1 model (not the base model)?
@@ -48,8 +49,8 @@ def mine_hard_negatives(
         batch_size: Encoding batch size.
 
     Returns:
-        Dataset with columns: anchor, positive, negative
-        (one row per hard negative — if n_negatives=1, same row count).
+        Dataset with columns: anchor, positive, negative_1, ..., negative_N
+        (same row count as input, each row has N hard negatives).
     """
     anchors = train_dataset["anchor"]
     positives = train_dataset["positive"]
@@ -90,9 +91,7 @@ def mine_hard_negatives(
 
     # For each query, mask the gold positive and pick top-K
     print(f"  Mining top-{n_negatives} hard negatives per query...")
-    new_anchors = []
-    new_positives = []
-    new_negatives = []
+    neg_columns = {f"negative_{j+1}": [] for j in range(n_negatives)}
     skipped = 0
 
     for i in range(len(anchors)):
@@ -103,27 +102,26 @@ def mine_hard_negatives(
         # Get top-K indices (highest similarity = hardest negatives)
         top_k_indices = np.argsort(sims)[-n_negatives:][::-1]
 
-        for neg_idx in top_k_indices:
+        for j, neg_idx in enumerate(top_k_indices):
             neg_text = unique_positives[neg_idx]
-            # Safety: skip if somehow the negative IS the positive
             if neg_text == positives[i]:
                 skipped += 1
-                continue
-            new_anchors.append(anchors[i])
-            new_positives.append(positives[i])
-            new_negatives.append(neg_text)
+                neg_text = ""  # placeholder, shouldn't happen
+            neg_columns[f"negative_{j+1}"].append(neg_text)
 
     if skipped > 0:
-        print(f"  Warning: skipped {skipped} duplicate negatives")
+        print(f"  Warning: {skipped} negatives matched positive")
 
-    print(f"  Mined {len(new_negatives)} hard negative triplets "
-          f"from {len(anchors)} queries")
+    total_neg = len(anchors) * n_negatives
+    print(f"  Mined {total_neg} hard negatives "
+          f"({n_negatives} per query, {len(anchors)} queries)")
 
-    return Dataset.from_dict({
-        "anchor": new_anchors,
-        "positive": new_positives,
-        "negative": new_negatives,
-    })
+    data = {
+        "anchor": anchors,
+        "positive": positives,
+        **neg_columns,
+    }
+    return Dataset.from_dict(data)
 
 
 if __name__ == "__main__":
@@ -136,7 +134,7 @@ if __name__ == "__main__":
     MODEL_NAME   = str(PROJECT_ROOT / "models" / "stage_1_mnrl" / "final")
     TRAIN_DIR    = PROJECT_ROOT / "data" / "processed" / "train"
     OUTPUT_DIR   = PROJECT_ROOT / "data" / "processed" / "train_hard_neg"
-    N_NEGATIVES  = 1
+    N_NEGATIVES  = 5
     BATCH_SIZE   = 64
     INSTRUCT     = False
     INSTRUCT_PREFIX = (
