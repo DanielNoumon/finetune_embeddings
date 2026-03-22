@@ -12,28 +12,28 @@ Run from the project root:
     python finetuning/qwen3_4b/upload_to_hf.py
 """
 
+import json
 import torch
 from pathlib import Path
 from peft import PeftModel
-from sentence_transformers import SentenceTransformer, SentenceTransformerModelCardData
+from sentence_transformers import SentenceTransformer
 from sentence_transformers.evaluation import (
     InformationRetrievalEvaluator,
     SequentialEvaluator,
 )
-import json
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-BASE_MODEL_NAME   = "Qwen/Qwen3-Embedding-4B"
-STAGE1_DIR        = PROJECT_ROOT / "models" / "qwen3_4b_stage1" / "final"
-STAGE2_DIR        = PROJECT_ROOT / "models" / "qwen3_4b_stage2"
-EVAL_DIR          = PROJECT_ROOT / "data" / "processed" / "eval"
+BASE_MODEL_NAME = "Qwen/Qwen3-Embedding-4B"
+STAGE1_DIR = PROJECT_ROOT / "models" / "qwen3_4b_stage1" / "final"
+STAGE2_DIR = PROJECT_ROOT / "models" / "qwen3_4b_stage2"
+EVAL_DIR = PROJECT_ROOT / "data" / "processed" / "eval"
 
-HF_REPO_ID        = "danielnoumon/qwen3-embedding-4b-ai-act-nl"
-MODEL_CARD_PATH   = PROJECT_ROOT / "model_cards" / "MODEL_CARD_QWEN3_4B.md"
+HF_REPO_ID = "danielnoumon/qwen3-embedding-4b-ai-act-nl"
+MODEL_CARD_PATH = PROJECT_ROOT / "model_cards" / "MODEL_CARD_QWEN3_4B.md"
 
 QUERY_PROMPT = (
     "Instruct: Given a question about EU AI regulation, "
@@ -57,20 +57,16 @@ def load_eval_data(eval_dir):
     return queries, corpus, relevant_docs
 
 
-def load_st_bf16(model_name, card=None):
-    kwargs = dict(
-        model_kwargs={"torch_dtype": torch.bfloat16},
-        tokenizer_kwargs={"padding_side": "left"},
-    )
-    if card:
-        kwargs["model_card_data"] = card
+def load_st_bf16(model_name):
     for attn in ["flash_attention_2", "sdpa", "eager"]:
         try:
             return SentenceTransformer(
                 model_name,
-                model_kwargs={**kwargs["model_kwargs"], "attn_implementation": attn},
-                tokenizer_kwargs=kwargs["tokenizer_kwargs"],
-                **({"model_card_data": card} if card else {}),
+                model_kwargs={
+                    "torch_dtype": torch.bfloat16,
+                    "attn_implementation": attn,
+                },
+                tokenizer_kwargs={"padding_side": "left"},
             )
         except (ImportError, ValueError):
             continue
@@ -97,14 +93,14 @@ def load_stage1_merged():
     """Load Stage 1 checkpoint. Merge LoRA if saved in PEFT format."""
     adapter_cfg = STAGE1_DIR / "adapter_config.json"
     if adapter_cfg.exists():
-        print(f"Stage 1 is PEFT format — loading base + merging...")
+        print("Stage 1 is PEFT format — loading base + merging...")
         base = load_st_bf16(BASE_MODEL_NAME)
         peft = PeftModel.from_pretrained(base[0].auto_model, str(STAGE1_DIR))
         base[0].auto_model = peft.merge_and_unload()
         print("  Stage 1 LoRA merged.")
         return base
     else:
-        print(f"Stage 1 is merged format — loading directly...")
+        print("Stage 1 is merged format — loading directly...")
         return load_st_bf16(str(STAGE1_DIR))
 
 
@@ -133,8 +129,7 @@ if __name__ == "__main__":
     best_model = None
 
     for ckpt_dir in ckpt_dirs:
-        # Trainer saves ST structure: adapter is under 0_Transformer/
-        adapter_dir = ckpt_dir / "0_Transformer"
+        adapter_dir = ckpt_dir
         if not (adapter_dir / "adapter_config.json").exists():
             print(f"  Skipping {ckpt_dir.name}: no adapter found at {adapter_dir}")
             continue
@@ -155,7 +150,7 @@ if __name__ == "__main__":
             merged = peft.merge_and_unload()
             model[0].auto_model = merged
             best_model = model
-            print(f"  New best — will upload this checkpoint.")
+            print("  New best — will upload this checkpoint.")
 
         if best_model is not model:
             del model
@@ -164,7 +159,7 @@ if __name__ == "__main__":
     if best_model is None:
         raise RuntimeError(
             "No valid Stage 2 checkpoints found. "
-            "Check that checkpoint-*/0_Transformer/adapter_config.json exists."
+            "Check that checkpoint-*/adapter_config.json exists."
         )
 
     print(f"\nBest checkpoint: {PRIMARY_METRIC} = {best_score:.4f}")

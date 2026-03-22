@@ -25,10 +25,15 @@ Fine-tunes multilingual embedding models for semantic search and retrieval on th
 │   ├── e5_large_stage2/        # e5-large: Stage 2 (hard negatives)
 │   │   ├── mine_negatives.py
 │   │   └── finetune_stage2.py
-│   └── qwen3/                  # Qwen3-Embedding-0.6B
-│       ├── eval_baseline.py    # Zero-shot evaluation
+│   ├── qwen3/                  # Qwen3-Embedding-0.6B (full fine-tune)
+│   │   ├── eval_baseline.py    # Zero-shot evaluation
+│   │   ├── finetune_stage1.py
+│   │   └── finetune_stage2.py
+│   └── qwen3_4b/               # Qwen3-Embedding-4B (LoRA)
 │       ├── finetune_stage1.py
-│       └── finetune_stage2.py
+│       ├── mine_negatives.py
+│       ├── finetune_stage2.py
+│       └── upload_to_hf.py     # Merge LoRA + upload to HuggingFace
 ├── upload_to_hf/
 │   ├── upload_dataset.py       # Upload dataset to HuggingFace
 │   ├── upload_readme.py        # Upload dataset card
@@ -69,14 +74,26 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/e5_large_stag
 **Qwen3-Embedding-0.6B:**
 ```bash
 python finetuning/qwen3/eval_baseline.py
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/qwen3/finetune_stage1.py
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/qwen3/finetune_stage2.py
+python finetuning/qwen3/finetune_stage1.py
+python finetuning/qwen3/mine_negatives.py
+python finetuning/qwen3/finetune_stage2.py
+```
+
+**Qwen3-Embedding-4B (LoRA):**
+```bash
+python finetuning/qwen3_4b/finetune_stage1.py
+python finetuning/qwen3_4b/mine_negatives.py
+python finetuning/qwen3_4b/finetune_stage2.py
 ```
 
 ### 5. Upload to HuggingFace
 ```bash
+# Dataset
 uv run python upload_to_hf/upload_dataset.py --repo-id "username/dataset-name"
 uv run python upload_to_hf/upload_readme.py --repo-id "username/dataset-name"
+
+# Qwen3-4B: merges LoRA adapters and uploads merged model
+python finetuning/qwen3_4b/upload_to_hf.py
 ```
 
 ## Dataset
@@ -89,14 +106,16 @@ uv run python upload_to_hf/upload_readme.py --repo-id "username/dataset-name"
 
 ## Results
 
-Base model: `intfloat/multilingual-e5-large` — NDCG@10 on held-out eval set:
+NDCG@10 at dim=1024 on held-out eval set (340 queries, 85 chunks):
 
-| Config | Stage 1 | Stage 2 | Δ from base |
-|--------|---------|---------|-------------|
-| Batch 8 (standard MNRL) | 0.9327 | **0.9492** | **+0.0880** |
-| Batch 128 (CachedMNRL / GradCache) | 0.9422 | 0.9463 | +0.0851 |
+| Model | Stage 1 | Stage 2 | HuggingFace |
+|-------|---------|---------|-------------|
+| multilingual-e5-large (batch 8, MNRL) | 0.9327 | **0.9492** | — |
+| multilingual-e5-large (batch 128, CachedMNRL) | 0.9422 | 0.9463 | — |
+| Qwen3-Embedding-0.6B (CachedMNRL) | 0.9419 | 0.9467 | [danielnoumon/qwen3-embedding-0.6b-ai-act-nl](https://huggingface.co/danielnoumon/qwen3-embedding-0.6b-ai-act-nl) |
+| **Qwen3-Embedding-4B LoRA (CachedMNRL)** | **0.9631** | **0.9658** | [danielnoumon/qwen3-embedding-4b-ai-act-nl](https://huggingface.co/danielnoumon/qwen3-embedding-4b-ai-act-nl) |
 
-Base NDCG@10: 0.8612. More in-batch negatives improve Stage 1 but show diminishing returns after Stage 2 hard negatives.
+Zero-shot baselines: e5-large 0.8612, Qwen3-0.6B 0.8013, Qwen3-4B not measured.
 
 ## Configuration
 

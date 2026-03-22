@@ -328,6 +328,48 @@ In our experiments, collapse happened when:
 
 ---
 
+## Concept: LoRA (Low-Rank Adaptation)
+
+LoRA is a technique for fine-tuning large models by only training small "adapter" matrices instead of updating the full weights. The core idea:
+
+Every weight matrix in the model has shape `[in, out]`. Instead of updating all `in × out` parameters, LoRA inserts two smaller matrices:
+
+```
+W_update = A × B
+
+Where:
+  A: [in × r]   — trainable
+  B: [r × out]  — trainable
+  r: rank (e.g. 16) << min(in, out)
+```
+
+During training, only `A` and `B` are updated. The base weights `W_original` are frozen. At inference (or before Stage 2), the adapters are **merged**: `W_final = W_original + (A × B)`.
+
+**Why this is memory-efficient:**
+
+For a 4B model with ~4034M parameters, the Adam optimizer would normally store:
+- Gradients: ~4034M × 2 bytes = ~8 GB
+- Optimizer states (momentum + variance, fp32): ~4034M × 8 bytes = ~32 GB
+- **Total: ~40 GB extra on top of the 8 GB model**
+
+With LoRA (r=16, targeting q/k/v/o projections, 36 layers):
+- Trainable params: ~11.8M (0.29%)
+- Optimizer states: ~11.8M × 8 bytes = ~95 MB
+- **Total extra: ~95 MB** — negligible
+
+**Key parameters:**
+
+| Param | What it does | Typical value |
+|-------|-------------|---------------|
+| `r` (rank) | Subspace dimensionality — higher = more capacity | 8–64 |
+| `alpha` | Scaling factor. Effective scale = `alpha / r`. Usually set to `2r` | 2× rank |
+| `dropout` | Regularization on adapter weights | 0.0–0.1 |
+| `target_modules` | Which weight matrices to adapt | `q_proj, k_proj, v_proj, o_proj` |
+
+**Trade-off vs full fine-tuning:** LoRA constrains the weight update to a low-rank subspace. For domain adaptation (our task), this is sufficient. For tasks requiring large representational shifts from the base model, full fine-tuning is stronger. On ~2000 training pairs, LoRA prevents overfitting by limiting the parameter space.
+
+---
+
 ## Concept: CUDA Memory Fragmentation
 
 When PyTorch allocates and frees GPU memory during training, it can leave small "holes" of unused memory scattered across VRAM — like a parking lot where cars are spread out with empty spaces between them. Even if total free memory is 2 GB, no single contiguous block might be large enough for a 500 MB tensor allocation → OOM error.
@@ -566,15 +608,73 @@ For datasets < 10K pairs: **1 hard negative per query.** Quality of the hardest 
 
 ---
 
+## Qwen3-Embedding on Blackwell: bf16 Works
+
+Everything above (bf16 collapse, gradient checkpointing instability, SDPA issues) was specific to `multilingual-e5-large`. When we switched to **Qwen3-Embedding**, the picture changed entirely.
+
+**Qwen3 uses bf16 stably on RTX 5090.** The reason: Qwen3's `RMSNorm` layers upcast inputs to fp32 internally before computing normalization, then cast back to bf16. This keeps the numerically sensitive normalization operations precise even when the rest of the model runs in bf16. The gradient explosion that destroyed e5-large training doesn't occur.
+
+**flash_attention_2 is not available** (not installed), so it falls back to SDPA. Unlike e5-large, SDPA + bf16 is stable with Qwen3.
+
+**Effective config for Qwen3-0.6B (full fine-tuning, 32GB):**
+
+```python
+bf16 = True
+fp32 = False
+attn_implementation = "sdpa"     # flash_attention_2 fallback
+gradient_checkpointing = False   # not needed — bf16 gives enough headroom
+
+# CachedMNRL
+per_device_train_batch_size = 128
+mini_batch_size = 4              # 0.6B + MatryoshkaLoss (6 dims)
+```
+
+---
+
+## Qwen3-Embedding-4B with LoRA on Blackwell
+
+The 4B model is too large for full fine-tuning on 32GB. With LoRA (r=16, targeting q/k/v/o_proj):
+- Base weights: ~8 GB (frozen, no gradients)
+- Trainable LoRA weights: 11.8M params (~0.05 GB)
+- Adam optimizer for LoRA weights: ~0.1 GB
+- **Fixed overhead: ~8.15 GB** vs ~40 GB for full fine-tuning
+
+This leaves ~24 GB for activations — plenty for CachedMNRL with mini-batch processing.
+
+### mini_batch_size scaling with model size and column count
+
+The 4B model is ~7× the size of 0.6B. CachedMNRL's backward re-embed step holds intermediate activations for each sequence in the mini-batch. With 4B, each sequence is more expensive:
+
+| Stage | Columns | mini_batch_size | VRAM result |
+|-------|---------|----------------|-------------|
+| 0.6B Stage 1 | 2 | 4 | Fits ✅ |
+| 0.6B Stage 2 | 3 | 4 | Fits ✅ |
+| 4B Stage 1 | 2 | 2 | Fits ✅ (~58s/step) |
+| 4B Stage 2 | 3 | 2 | OOM ❌ |
+| 4B Stage 2 | 3 | **1** | Fits ✅ |
+
+**Why Stage 2 needs half the mini_batch_size of Stage 1:** During the backward re-embed pass, CachedMNRL holds a computation graph for every column (anchor, positive, + N negatives). Stage 2 adds one negative column: 2 columns → 3 columns = 50% more graph memory. Halving mini_batch_size restores the budget.
+
+**Rule of thumb:** When adding hard negative columns in Stage 2, halve mini_batch_size from Stage 1's value.
+
+### load_best_model_at_end is broken with PEFT + SentenceTransformer
+
+HuggingFace Trainer's `load_best_model_at_end=True` fails silently when training a SentenceTransformer wrapping a PEFT model. The Trainer tries to restore the best checkpoint using a generic `model.load_state_dict()` call, but PEFT saves weights with the prefix `base_model.model.*` while SentenceTransformer's Transformer module expects unprefixed keys. The mismatch causes the load to fail, and the model in memory at the end of training (the last epoch, not the best) gets saved.
+
+**Fix:** Set `load_best_model_at_end=False`. After `trainer.train()`, iterate over saved checkpoints, load each by applying the adapter to the Stage 1 merged base, evaluate, and save the best.
+
+---
+
 ## Quick Reference: RTX 5090 Training Config
 
 ```bash
-# Always use this environment variable
+# Always use this environment variable (for e5-large fp32 runs)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
 
+### multilingual-e5-large (fp32 required on Blackwell)
+
 ```python
-# Forced by Blackwell GPU constraints
 fp32 = True          # bf16 causes gradient explosion and collapse
 bf16 = False
 fp16 = False
@@ -586,14 +686,51 @@ gradient_checkpointing = False   # recomputation causes numerical collapse
 # MatryoshkaLoss (2 columns):          batch 8
 # Plain MNRL + hard neg (3 columns):   batch 8
 # MatryoshkaLoss + hard neg (3 cols):  batch 4
-# Use gradient accumulation to reach desired effective batch size
 
-# CachedMNRL (GradCache) — decouples contrastive pool from VRAM
-# per_device_train_batch_size = 128   # contrastive pool (127 in-batch negatives)
-# mini_batch_size = 4                 # actual VRAM usage per forward pass
-# gradient_accumulation_steps = 1     # no longer needed
+# CachedMNRL (GradCache)
+# per_device_train_batch_size = 128
+# mini_batch_size = 4
+```
+
+### Qwen3-Embedding-0.6B (full fine-tuning, bf16 works)
+
+```python
+bf16 = True          # Qwen3 RMSNorm fp32 upcast prevents collapse
+fp32 = False
+attn_implementation = "sdpa"     # flash_attention_2 not installed, sdpa stable
+gradient_checkpointing = False
+
+# CachedMNRL
+per_device_train_batch_size = 128
+mini_batch_size = 4              # Stage 1 (2 cols) and Stage 2 (3 cols) both fit
+learning_rate = 2e-5             # Stage 1
+learning_rate = 1e-5             # Stage 2 (lower to prevent catastrophic forgetting)
+```
+
+### Qwen3-Embedding-4B (LoRA, bf16)
+
+```python
+bf16 = True
+attn_implementation = "sdpa"
+gradient_checkpointing = False
+
+# LoRA config
+lora_r = 16
+lora_alpha = 32
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+# → 11.8M / 4034M trainable (0.29%)
+
+# CachedMNRL
+per_device_train_batch_size = 128
+mini_batch_size = 2              # Stage 1 (2 cols) — ~58s/step
+mini_batch_size = 1              # Stage 2 (3 cols) — halve when adding negatives column
+learning_rate = 1e-4             # Stage 1 (higher LR typical for LoRA)
+learning_rate = 1e-5             # Stage 2
+
+# load_best_model_at_end = False  # broken with PEFT+ST — use manual checkpoint selection
 ```
 
 ---
 
-*Last updated: March 2026. Includes GradCache experiments and Stage 2 results.*
+*Last updated: March 2026. Includes Qwen3-0.6B, Qwen3-4B LoRA, and PEFT checkpoint findings.*

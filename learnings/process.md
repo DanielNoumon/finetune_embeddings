@@ -700,3 +700,187 @@ For this dataset size (~2000 pairs), **1 hard negative is the sweet spot.** The 
 ### Best model for production
 
 The **batch-8 standard MNRL pipeline** (experiment #2) at **NDCG@10 = 0.9492** remains the best result. The model is saved at `models/stage_2_hard_neg/final/` from that run.
+
+---
+
+## Step 10 — Switching to Qwen3-Embedding-0.6B
+
+### Why a different model family?
+
+The e5-large experiments plateaued at NDCG@10 ~0.949. Before scaling to a larger model, we switched architecture entirely — from an **encoder-based** model to a **decoder-based** embedding model.
+
+**Qwen3-Embedding** is a family of embedding models from Alibaba's Qwen team, built on top of the Qwen3 language model. The key architectural difference from e5-large:
+
+| Property | multilingual-e5-large | Qwen3-Embedding-0.6B |
+|----------|----------------------|----------------------|
+| Architecture | Encoder (BERT-style, bidirectional) | Decoder (GPT-style, causal) |
+| Parameters | 560M | 620M |
+| Max tokens | 512 | 8,192 |
+| Output dims | 1024 | 1024 |
+| Pooling | CLS token | Last token |
+| Padding | Right | **Left** |
+| Query prompts | `"query: "` / `"passage: "` | Instruct-style prompt |
+
+The 512-token limit of e5-large was a real constraint — our chunks average 283 tokens but some exceed 512. Qwen3 removes this ceiling entirely.
+
+### Why decoders make good embedding models
+
+Intuitively, encoder models (bidirectional attention) seem better for embeddings — they process the full context in both directions. But in practice:
+
+- Decoder models are pre-trained on vastly larger corpora with stronger generative objectives
+- The instruction-following training of decoder LLMs transfers cleanly to embedding tasks
+- Last-token pooling on a well-trained decoder captures the full input context effectively
+
+The model uses **left padding** specifically for this: the embedding is taken from the last non-padding token position. By padding on the left, the last real token is always at the final position of the sequence.
+
+### Instruct prompts for queries
+
+Instead of a simple `"query: "` prefix, Qwen3 uses a structured instruction for queries:
+
+```python
+QUERY_PROMPT = (
+    "Instruct: Given a question about EU AI regulation, "
+    "retrieve the most relevant passage\nQuery:"
+)
+```
+
+Documents get no prefix at all — the asymmetry is intentional. The query needs to encode what task it's being used for; the document just needs to represent its content.
+
+### Blackwell compatibility
+
+Unlike e5-large, **Qwen3-Embedding runs stably in bf16 on Blackwell**. The reason: Qwen3's RMSNorm upcasts to fp32 internally before computing the normalization. This keeps the critical numerical operations precise even when the rest of the model runs in bf16. The gradient explosion we saw with e5-large in bf16 doesn't occur.
+
+This means we can use:
+- `bf16=True` (2× memory savings vs fp32)
+- SDPA attention (flash_attention_2 not required, sdpa works as fallback)
+- No gradient checkpointing needed (bf16 gives enough headroom)
+
+And CachedMNRL with:
+- `per_device_train_batch_size = 128`
+- `mini_batch_size = 4`
+
+### Results
+
+| Dim | Zero-shot | Stage 1 | Stage 2 | Δ (ZS→S2) |
+|-----|-----------|---------|---------|-----------|
+| 1024 | 0.8013 | 0.9419 | **0.9467** | +0.1454 |
+| 768 | 0.8109 | 0.9452 | **0.9479** | +0.1370 |
+| 512 | 0.8043 | 0.9427 | **0.9449** | +0.1406 |
+| 256 | 0.7691 | 0.9343 | **0.9412** | +0.1721 |
+| 128 | 0.7358 | 0.9154 | **0.9163** | +0.1805 |
+| 64 | 0.6727 | 0.8907 | 0.8854 | +0.2127 |
+
+Stage 2 NDCG@10 at dim=1024 (0.9467) is nearly identical to the best e5-large result (0.9492), with a significantly better context window and native Matryoshka support built into the base model.
+
+**Stage 2 barely improved over Stage 1** — the Qwen3-0.6B model, with 127 in-batch negatives via CachedMNRL, was already near its ceiling after Stage 1. Hard negatives added only +0.005 at dim=1024. This matches the pattern from the e5-large GradCache experiment: more in-batch negatives → less room for hard negative improvement.
+
+The model was published to [danielnoumon/qwen3-embedding-0.6b-ai-act-nl](https://huggingface.co/danielnoumon/qwen3-embedding-0.6b-ai-act-nl).
+
+---
+
+## Step 11 — Qwen3-Embedding-4B with LoRA
+
+### Why 4B?
+
+The 0.6B model hit ~0.947 NDCG@10. To push further, we scale to the 4B variant — but full fine-tuning of a 4B model in bf16 requires approximately:
+
+- Weights: ~8 GB
+- Adam optimizer states (fp32): ~32 GB
+- Gradients: ~8 GB
+- **Total: ~48 GB** → exceeds the 32GB RTX 5090
+
+The solution is **LoRA (Low-Rank Adaptation)**, which freezes the base model weights and only trains small adapter matrices.
+
+### How LoRA works
+
+Every weight matrix in a transformer is large — for example, the query projection in a 4B model might be a 2048×2048 matrix (4M parameters). Instead of updating all 4M values, LoRA inserts two small matrices:
+
+```
+W_new = W_original + (A × B)
+
+Where:
+  W_original: 2048 × 2048 (frozen, ~4M params)
+  A: 2048 × 16   (trainable, ~32K params)
+  B: 16 × 2048   (trainable, ~32K params)
+```
+
+`A × B` is a **low-rank approximation** of the weight update. With rank `r=16`, you're saying: "the meaningful change to this matrix lives in a 16-dimensional subspace." This is surprisingly effective for domain adaptation.
+
+**Key parameters:**
+- `r` (rank): how many dimensions to allocate. Higher = more capacity, more VRAM. r=16 is standard.
+- `alpha`: scaling factor. Usually set to `2r`. Controls how strongly the adapter weights affect the output.
+- `target_modules`: which weight matrices to adapt. We target `q_proj, k_proj, v_proj, o_proj` (all attention projections).
+
+**Result for 4B Qwen3:** 11.8M trainable parameters out of 4,034M total — just **0.29%**. Optimizer states, gradients, and VRAM scale with this tiny fraction, making the 4B model fit comfortably on 32GB.
+
+### Two-stage LoRA pipeline
+
+The same two-stage structure applies, with one added complexity: Stage 2 needs to start from Stage 1's *merged* weights, not from the LoRA adapter file.
+
+**Stage 1 saves** a PEFT adapter checkpoint (only the ~50MB of adapter weights, not the 8GB base). To continue training in Stage 2:
+1. Load the 4B base model fresh
+2. Apply Stage 1's adapter via `PeftModel.from_pretrained()`
+3. Merge: `model.merge_and_unload()` — bakes the adapter into the base weights
+4. Apply a *new* LoRA adapter for Stage 2 fine-tuning
+
+This merge-then-re-adapt approach prevents the LoRA adapters from conflicting.
+
+### VRAM tuning for 4B
+
+The 4B model is ~7× larger than 0.6B. Accordingly, `mini_batch_size` for CachedMNRL needs to drop:
+
+| Stage | Columns | mini_batch_size | Result |
+|-------|---------|----------------|--------|
+| Stage 1 | 2 (anchor, positive) | 2 | Fits ✅ |
+| Stage 2 | 3 (anchor, positive, negative_1) | 2 | OOM ❌ |
+| Stage 2 | 3 (anchor, positive, negative_1) | **1** | Fits ✅ |
+
+The extra column in Stage 2 (hard negatives) requires the backward re-embed pass to process 3× more sequences. With mini_batch_size=2 already at the limit, adding one column tips it into OOM. Dropping to mini_batch_size=1 cuts the backward re-embed memory in half.
+
+### `load_best_model_at_end` bug with PEFT
+
+HuggingFace Trainer's `load_best_model_at_end=True` is broken when PEFT is wrapped inside a SentenceTransformer. The trainer tries to load the best checkpoint using a generic state_dict mechanism that doesn't understand the PEFT key naming convention (`base_model.model.*`).
+
+**Fix:** Set `load_best_model_at_end=False` and add a post-training function that:
+1. Iterates over all saved epoch checkpoints
+2. Loads Stage 1 merged base + applies each checkpoint's adapter
+3. Evaluates each on the IR task
+4. Saves the best merged model to `final/`
+
+This is implemented in `upload_to_hf.py` and the corrected `finetune_stage2.py`.
+
+### Results
+
+| Dim | Stage 1 | Stage 2 | Δ vs 0.6B Stage 2 |
+|-----|---------|---------|-------------------|
+| 2560 | 0.9626 | **0.9616** | — (new dim) |
+| 1024 | 0.9631 | **0.9658** | +0.0191 |
+| 768 | 0.9616 | **0.9609** | +0.0130 |
+| 512 | 0.9537 | **0.9526** | +0.0077 |
+| 256 | 0.9410 | **0.9420** | +0.0008 |
+| 128 | 0.9186 | **0.9188** | +0.0025 |
+
+**Key observations:**
+
+1. **4B LoRA beats 0.6B full fine-tune at every comparable dim** — 0.29% trainable parameters is enough for a 4B model to outperform a fully fine-tuned smaller model.
+
+2. **Stage 2 barely improved over Stage 1** (same pattern as 0.6B) — the model was already near-ceiling. Hard negatives converge fast when Stage 1 already has strong contrastive signal.
+
+3. **dim=1024 > dim=2560 (0.9658 vs 0.9616)** — a Matryoshka artifact. Each subspace is trained independently; the 1024-dim subspace can sometimes learn a sharper representation than the full-dim space. Acceptable and expected.
+
+4. **Epoch 1 ≈ Epoch 2** in Stage 2 — the model converged after the first epoch. Running 2 epochs is safe but not necessary.
+
+The model was published to [danielnoumon/qwen3-embedding-4b-ai-act-nl](https://huggingface.co/danielnoumon/qwen3-embedding-4b-ai-act-nl).
+
+---
+
+## Final Results: All Models
+
+| Model | Stage 2 NDCG@10 (dim=1024) | Notes |
+|-------|---------------------------|-------|
+| multilingual-e5-large (batch 8, standard MNRL) | **0.9492** | Best e5 result; small batch compensated by hard negatives |
+| multilingual-e5-large (batch 128, CachedMNRL) | 0.9463 | More in-batch neg, smaller hard neg gain |
+| Qwen3-Embedding-0.6B (CachedMNRL) | 0.9467 | Equivalent to e5-large, 8192-token context |
+| **Qwen3-Embedding-4B LoRA (CachedMNRL)** | **0.9658** | Best overall; 0.29% trainable params |
+
+The 4B LoRA model is the clear winner. LoRA makes large models accessible without full fine-tuning infrastructure.
