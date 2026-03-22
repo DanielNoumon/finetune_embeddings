@@ -874,13 +874,91 @@ The model was published to [danielnoumon/qwen3-embedding-4b-ai-act-nl](https://h
 
 ---
 
+## Step 12 — Benchmarking Against Proprietary SOTA
+
+### Why compare against a proprietary model?
+
+Fine-tuning is only valuable if it beats what you can get out of the box. The ultimate test is whether a small, domain-adapted model outperforms the best general-purpose proprietary embedding API on your specific task.
+
+### Model choice: text-embedding-3-large
+
+We chose OpenAI's `text-embedding-3-large` as the proprietary baseline because:
+
+1. **It's the strongest general-purpose embedding model widely available** — consistently near the top of MTEB leaderboards across multiple languages
+2. **It natively supports Matryoshka dimensions** via the `dimensions` API parameter, so we can compare at the exact same truncation points as our fine-tuned models
+3. **It's the model most teams would reach for** when building a RAG pipeline without fine-tuning — if we beat it, the fine-tuning investment is clearly justified
+4. **We already had Azure OpenAI infrastructure** from the synthetic query generation step, so adding an embedding deployment required no new setup
+
+### Evaluation setup
+
+The evaluation uses the exact same data and metrics as all prior experiments:
+
+- **Eval set:** 340 Dutch queries, 85 corpus chunks (same chunk-level split — no leakage)
+- **Primary metric:** NDCG@10 (cosine similarity)
+- **Matryoshka dims tested:** 3072 (text-embedding-3-large's full dimensionality), 1024, 768, 512, 256, 128
+
+The only difference is how embeddings are produced: instead of a local SentenceTransformer, we call the Azure OpenAI embeddings API. The metric computation (cosine similarity → ranking → NDCG/MRR/MAP/Recall) is identical.
+
+No query prompt or instruct prefix is used for text-embedding-3-large — it doesn't support task-specific instructions. The model receives raw query and corpus text.
+
+### Results
+
+**NDCG@10 across Matryoshka dimensions:**
+
+| Dim | text-embedding-3-large | Qwen3-4B LoRA (best) | Δ |
+|-----|----------------------|---------------------|---|
+| 3072 | 0.8643 | — | — |
+| 1024 | 0.8635 | **0.9658** | **+0.1023** |
+| 768 | 0.8622 | **0.9609** | +0.0987 |
+| 512 | 0.8573 | **0.9526** | +0.0953 |
+| 256 | 0.8166 | **0.9420** | +0.1254 |
+| 128 | 0.7598 | **0.9188** | +0.1590 |
+
+**Full metrics at dim=3072 (text-embedding-3-large's best):**
+
+| Metric | text-embedding-3-large | Qwen3-4B (dim=2560) |
+|--------|----------------------|---------------------|
+| NDCG@10 | 0.8643 | **0.9616** |
+| MRR@10 | 0.8308 | — |
+| MAP@100 | 0.8332 | — |
+| Accuracy@1 | 0.7441 | — |
+| Accuracy@3 | 0.9088 | — |
+| Accuracy@5 | 0.9441 | — |
+| Accuracy@10 | 0.9647 | — |
+| Recall@10 | 0.9647 | — |
+
+**Comparison at dim=1024 across all models:**
+
+| Model | NDCG@10 | vs text-embedding-3-large |
+|-------|---------|--------------------------|
+| text-embedding-3-large (zero-shot) | 0.8635 | — |
+| multilingual-e5-large zero-shot | 0.8612 | -0.0023 |
+| multilingual-e5-large Stage 2 | 0.9492 | +0.0857 |
+| Qwen3-Embedding-0.6B Stage 2 | 0.9467 | +0.0832 |
+| **Qwen3-Embedding-4B LoRA Stage 2** | **0.9658** | **+0.1023** |
+
+### Analysis
+
+1. **Fine-tuning adds ~10 points of NDCG@10 over proprietary SOTA.** At dim=1024, even our smallest fine-tuned model (e5-large, 560M params) beats text-embedding-3-large by +8.6 points. The 4B model wins by +10.2 points. This is a massive gap in retrieval quality — the difference between "good enough" and "near-perfect" retrieval.
+
+2. **text-embedding-3-large barely benefits from more dimensions.** Its own Matryoshka scaling from 1024 to 3072 adds only +0.0008 NDCG@10 (0.8635 → 0.8643). The model lacks Dutch legal domain knowledge; more dimensions can't compensate for that. In contrast, our fine-tuned models encode task-specific patterns that remain useful across all Matryoshka truncation points.
+
+3. **Matryoshka degradation is steeper for the proprietary model at low dims.** text-embedding-3-large drops from 0.8643 (dim=3072) to 0.7598 (dim=128) — a 12% relative decline. Our Qwen3-4B drops from 0.9616 (dim=2560) to 0.9188 (dim=128) — only 4.5%. Matryoshka-aware fine-tuning explicitly teaches the model to be useful at every dimension.
+
+4. **Zero-shot baselines are nearly identical.** text-embedding-3-large (0.8635) and e5-large (0.8612) start at almost the same level on this task. The proprietary model has no inherent advantage on Dutch legal text — its strength is breadth across languages and domains, not depth on any specific one.
+
+5. **The value proposition of fine-tuning is clear.** A single run of fine-tuning on ~2,000 synthetic pairs (generated in minutes with GPT-5-mini) turns a generic embedding model into a domain specialist that far exceeds what the best proprietary API can deliver out of the box. The fine-tuned model is also local, private, and free at inference time.
+
+---
+
 ## Final Results: All Models
 
-| Model | Stage 2 NDCG@10 (dim=1024) | Notes |
-|-------|---------------------------|-------|
-| multilingual-e5-large (batch 8, standard MNRL) | **0.9492** | Best e5 result; small batch compensated by hard negatives |
-| multilingual-e5-large (batch 128, CachedMNRL) | 0.9463 | More in-batch neg, smaller hard neg gain |
-| Qwen3-Embedding-0.6B (CachedMNRL) | 0.9467 | Equivalent to e5-large, 8192-token context |
-| **Qwen3-Embedding-4B LoRA (CachedMNRL)** | **0.9658** | Best overall; 0.29% trainable params |
+| Model | NDCG@10 (dim=1024) | Notes |
+|-------|-------------------|-------|
+| text-embedding-3-large (zero-shot) | 0.8635 | Proprietary SOTA baseline |
+| multilingual-e5-large zero-shot | 0.8612 | Open-source baseline |
+| multilingual-e5-large Stage 2 (batch 8) | 0.9492 | +8.6 over proprietary SOTA |
+| Qwen3-Embedding-0.6B Stage 2 | 0.9467 | +8.3 over proprietary SOTA |
+| **Qwen3-Embedding-4B LoRA Stage 2** | **0.9658** | **+10.2 over proprietary SOTA** |
 
-The 4B LoRA model is the clear winner. LoRA makes large models accessible without full fine-tuning infrastructure.
+The 4B LoRA model is the clear winner. Fine-tuning on domain-specific synthetic data delivers a +10 point NDCG@10 improvement over the best proprietary embedding API — with a model that runs locally, costs nothing at inference, and keeps sensitive legal data private.
