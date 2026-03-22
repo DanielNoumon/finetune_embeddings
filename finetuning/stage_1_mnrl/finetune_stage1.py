@@ -240,7 +240,7 @@ if __name__ == "__main__":
     )
 
     BATCH_SIZE      = 128
-    MINI_BATCH_SIZE = 16
+    MINI_BATCH_SIZE = 4
     GRAD_ACCUM      = 1
     EVAL_BATCH_SIZE = 4
     EPOCHS          = 3
