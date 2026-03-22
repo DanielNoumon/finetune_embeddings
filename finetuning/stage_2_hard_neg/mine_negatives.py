@@ -195,5 +195,8 @@ if __name__ == "__main__":
         print(f"\n--- Sample {i+1} ---")
         print(f"  Query:    {row['anchor'][:100]}...")
         print(f"  Positive: {row['positive'][:100]}...")
-        print(f"  Negative: {row['negative'][:100]}...")
+        for j in range(1, N_NEGATIVES + 1):
+            col = f"negative_{j}"
+            if col in row:
+                print(f"  Neg {j}:    {row[col][:80]}...")
     print(f"{'='*60}")
