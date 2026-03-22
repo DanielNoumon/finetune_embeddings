@@ -245,11 +245,12 @@ if __name__ == "__main__":
     )
     CORPUS_PROMPT = ""
 
-    # bf16 on Blackwell allows larger batches than e5-large's fp32
-    BATCH_SIZE = 64
-    MINI_BATCH_SIZE = None  # Standard MNRL — try without GradCache
+    # Qwen3 RMSNorm upcasts to fp32 internally, limiting batch size.
+    # Use CachedMNRL to get large contrastive pool with small VRAM.
+    BATCH_SIZE = 128
+    MINI_BATCH_SIZE = 16
     GRAD_ACCUM = 1
-    EVAL_BATCH_SIZE = 32
+    EVAL_BATCH_SIZE = 16
     EPOCHS = 3
     LR = 2e-5
     WARMUP_RATIO = 0.1

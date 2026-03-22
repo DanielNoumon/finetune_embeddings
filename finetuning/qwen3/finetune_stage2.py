@@ -238,11 +238,11 @@ if __name__ == "__main__":
     )
     CORPUS_PROMPT = ""
 
-    # Stage 2: lower LR, fewer epochs
-    BATCH_SIZE = 64
-    MINI_BATCH_SIZE = None
+    # Stage 2: lower LR, fewer epochs, CachedMNRL for VRAM
+    BATCH_SIZE = 128
+    MINI_BATCH_SIZE = 16
     GRAD_ACCUM = 1
-    EVAL_BATCH_SIZE = 32
+    EVAL_BATCH_SIZE = 16
     EPOCHS = 2
     LR = 1e-5
     WARMUP_RATIO = 0.1
