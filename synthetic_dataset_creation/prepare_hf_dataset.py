@@ -45,6 +45,21 @@ def load_all_pairs(synthetic_dir: Path) -> list[dict]:
     return all_pairs
 
 
+def deduplicate_queries(pairs: list[dict]) -> list[dict]:
+    """Remove pairs with duplicate query text, keeping the first occurrence."""
+    seen = set()
+    deduped = []
+    for pair in pairs:
+        query = pair["anchor"]
+        if query not in seen:
+            seen.add(query)
+            deduped.append(pair)
+    n_removed = len(pairs) - len(deduped)
+    if n_removed:
+        print(f"  Removed {n_removed} duplicate queries ({len(deduped)} remaining)")
+    return deduped
+
+
 def create_hf_dataset(
     pairs: list[dict],
     include_metadata: bool = True,
@@ -142,6 +157,9 @@ if __name__ == "__main__":
     if not pairs:
         print("No pairs found. Run generate_queries.py first.")
         exit(1)
+
+    # Deduplicate exact-match queries
+    pairs = deduplicate_queries(pairs)
 
     # Create HF dataset
     dataset = create_hf_dataset(pairs, include_metadata=INCLUDE_METADATA)

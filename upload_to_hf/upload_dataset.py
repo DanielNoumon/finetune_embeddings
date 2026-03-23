@@ -59,64 +59,42 @@ def upload_dataset(
 
 
 if __name__ == "__main__":
-    import argparse
-    
+
     # -----------------------------------------------------------------------
     # CONFIG: Adjust these parameters for your use case
     # -----------------------------------------------------------------------
-    
-    # Default dataset path
-    DEFAULT_DATASET_PATH = (
-        Path(__file__).resolve().parent.parent
-        / "data" / "hf_dataset"
-    )
-    
-    # Default repository ID (change to your username/dataset-name)
-    DEFAULT_REPO_ID = "your-username/eu-ai-act-nl-queries"
-    
-    # Whether to make the dataset private by default
-    DEFAULT_PRIVATE = False
-    
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+    # Path to the prepared HF dataset directory
+    DATASET_PATH = PROJECT_ROOT / "data" / "hf_dataset"
+
+    # HF repository ID
+    REPO_ID = "danielnoumon/eu-regulations-nl-queries"
+
+    # Dataset card to upload as README.md
+    DATASET_CARD = PROJECT_ROOT / "upload_to_hf" / "DATASET_CARD_eu_regulations_combined.md"
+
+    # Whether to make the dataset private
+    PRIVATE = False
+
     # -----------------------------------------------------------------------
-    
-    parser = argparse.ArgumentParser(
-        description="Upload dataset to Hugging Face Hub"
-    )
-    parser.add_argument(
-        "--dataset-path",
-        type=str,
-        default=str(DEFAULT_DATASET_PATH),
-        help="Path to the prepared HF dataset directory"
-    )
-    parser.add_argument(
-        "--repo-id",
-        type=str,
-        default=DEFAULT_REPO_ID,
-        help="Repository ID on HF Hub (e.g., 'username/dataset-name')"
-    )
-    parser.add_argument(
-        "--private",
-        action="store_true",
-        default=DEFAULT_PRIVATE,
-        help="Make the dataset private"
-    )
-    parser.add_argument(
-        "--token",
-        type=str,
-        default=None,
-        help="HF token (or set HF_TOKEN env var)"
-    )
-    args = parser.parse_args()
-    
-    # Validate repo_id
-    if args.repo_id == DEFAULT_REPO_ID:
-        print("ERROR: Please specify --repo-id with your HF username/dataset-name")
-        print("Example: --repo-id 'danielnoumon/eu-ai-act-nl-queries'")
-        exit(1)
-    
+
     upload_dataset(
-        dataset_path=args.dataset_path,
-        repo_id=args.repo_id,
-        private=args.private,
-        token=args.token
+        dataset_path=str(DATASET_PATH),
+        repo_id=REPO_ID,
+        private=PRIVATE,
     )
+
+    # Upload dataset card as README.md
+    if DATASET_CARD.exists():
+        print(f"\nUploading dataset card: {DATASET_CARD.name}")
+        api = HfApi()
+        api.upload_file(
+            path_or_fileobj=str(DATASET_CARD),
+            path_in_repo="README.md",
+            repo_id=REPO_ID,
+            repo_type="dataset",
+            commit_message="Upload dataset card",
+        )
+        print(f"Dataset card uploaded.")

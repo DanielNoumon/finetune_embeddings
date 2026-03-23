@@ -43,6 +43,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Dataset cards
+upload_to_hf/DATASET_CARD_*.md
+
 # Project specific
 data/synthetic/*.jsonl
 data/synthetic/*_backup_*.jsonl
