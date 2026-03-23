@@ -121,6 +121,7 @@ MODEL_CONFIGS: list[ModelConfig] = [
         model_type="st",
         dims=[1024, 512, 256, 128],
         query_prompt=_EU_PROMPT,
+        batch_size=16,
         model_kwargs={
             "torch_dtype": torch.bfloat16,
             "attn_implementation": "sdpa",
