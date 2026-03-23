@@ -535,6 +535,23 @@ def print_results_table(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--only",
+        default="",
+        help="Only run models whose name contains this substring "
+             "(case-insensitive). E.g. --only openai",
+    )
+    parser.add_argument(
+        "--append-to",
+        default="",
+        dest="append_to",
+        help="Path to an existing results JSON to merge new results into.",
+    )
+    args = parser.parse_args()
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cuda":
         gpu_name = torch.cuda.get_device_name(0)
@@ -543,9 +560,25 @@ if __name__ == "__main__":
     else:
         print("Device: CPU (no CUDA — ST models will be slow)")
 
+    # Load existing results if appending
     all_results: dict[str, dict] = {}
+    if args.append_to:
+        append_path = Path(args.append_to)
+        if not append_path.is_absolute():
+            append_path = PROJECT_ROOT / append_path
+        with open(append_path, encoding="utf-8") as f:
+            all_results = json.load(f)
+        print(f"Loaded {len(all_results)} existing model(s) from {append_path.name}")
 
-    for config in MODEL_CONFIGS:
+    configs_to_run = MODEL_CONFIGS
+    if args.only:
+        configs_to_run = [
+            c for c in MODEL_CONFIGS
+            if args.only.lower() in c.name.lower()
+        ]
+        print(f"Filter '--only {args.only}': {len(configs_to_run)} model(s) selected")
+
+    for config in configs_to_run:
         print(f"\n{'─' * 62}")
         print(f"Model: {config.name}")
 
@@ -559,6 +592,11 @@ if __name__ == "__main__":
             ):
                 print(f"  [SKIP] Local path not found: {local}")
                 continue
+
+        # Skip if already present in loaded results (append mode)
+        if args.append_to and config.name in all_results:
+            print("  [SKIP] Already in loaded results")
+            continue
 
         t_model = time.time()
 
