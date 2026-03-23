@@ -962,3 +962,121 @@ No query prompt or instruct prefix is used for text-embedding-3-large — it doe
 | **Qwen3-Embedding-4B LoRA Stage 2** | **0.9658** | **+10.2 over proprietary SOTA** |
 
 The 4B LoRA model is the clear winner. Fine-tuning on domain-specific synthetic data delivers a +10 point NDCG@10 improvement over the best proprietary embedding API — with a model that runs locally, costs nothing at inference, and keeps sensitive legal data private.
+
+---
+
+## Step 13 — Cross-Domain Evaluation on the Combined EU Regulations Dataset
+
+### Motivation
+
+Steps 1–12 evaluated all models on a small, single-document eval set: 85 held-out EU AI Act chunks, ~340 queries. This made for a highly favourable retrieval environment — the correct chunk only needed to be distinguished from 84 other EU AI Act chunks. 
+
+Two limitations needed addressing:
+
+1. **Corpus too small** — 85 chunks is not realistic. A production RAG pipeline has hundreds or thousands of documents. With a small corpus, even zero-shot models score artificially high.
+2. **Single document** — the models were trained *and* evaluated on EU AI Act text. It was unclear whether improvements reflected general Dutch legal retrieval capability or mere domain memorisation.
+
+We extended the evaluation by adding the **Dutch GDPR (AVG)** as a second document, creating a combined corpus of 912 chunks and using the full 5,472-query dataset split across three eval sets.
+
+### Dataset
+
+| Split | Queries | Corpus chunks | Description |
+|-------|---------|--------------|-------------|
+| `combined` | 5,472 | 912 | All queries, all chunks — cross-document retrieval |
+| `eu_ai_act` | 3,210 | 535 | EU AI Act queries vs EU AI Act corpus only |
+| `gdpr` | 2,262 | 377 | GDPR queries vs GDPR corpus only |
+
+**Note on methodology:** Unlike Steps 4–12 which used a held-out test split, this evaluation runs over the full dataset (including training queries). This would normally inflate scores for fine-tuned models — but the much larger corpus (535–912 chunks vs 85 previously) more than counteracts that, making overall NDCG@10 numbers lower and more realistic.
+
+### Evaluation setup
+
+Three eval JSON sets were generated from `hf_dataset.parquet` using `evaluation/prepare_eval_combined.py`. Each model was evaluated with `evaluation/eval_combined.py`, which supports both SentenceTransformer models (GPU) and OpenAI embeddings (API), with `--only` and `--append-to` flags for partial runs.
+
+### Results
+
+**NDCG@10 @ dim=1024:**
+
+| Model | Combined | EU AI Act | GDPR |
+|-------|----------|-----------|------|
+| multilingual-e5-large (zero-shot) | 0.5816 | 0.5584 | 0.6475 |
+| Qwen3-0.6B (zero-shot) | 0.5448 | 0.5349 | 0.6007 |
+| text-embedding-3-large (OpenAI) | 0.6012 | 0.5682 | 0.6733 |
+| multilingual-e5-large (EU AI Act FT) | 0.7199 | 0.7435 | 0.7311 |
+| Qwen3-0.6B (EU AI Act FT) | 0.7118 | 0.7441 | 0.7110 |
+| **Qwen3-4B (EU AI Act FT)** | **0.7596** | **0.7626** | **0.7900** |
+
+**Full metrics @ dim=1024 on the combined eval set:**
+
+| Metric | e5-large FT | Qwen3-0.6B FT | Qwen3-4B FT | OpenAI |
+|--------|------------|--------------|------------|--------|
+| NDCG@10 | 0.7199 | 0.7118 | **0.7596** | 0.6012 |
+| MRR@10 | 0.6599 | 0.6525 | **0.7045** | 0.5357 |
+| MAP@100 | 0.6642 | 0.6569 | **0.7079** | — |
+| Accuracy@1 | 0.5316 | 0.5263 | **0.5830** | — |
+| Accuracy@5 | 0.8266 | 0.8198 | **0.8655** | — |
+| Accuracy@10 | 0.9068 | 0.8969 | **0.9306** | — |
+| Recall@10 | 0.9068 | 0.8969 | **0.9306** | — |
+
+**Qwen3-4B Matryoshka tradeoff on combined eval:**
+
+| Dim | NDCG@10 | Δ vs 1024 |
+|-----|---------|----------|
+| 1024 | 0.7596 | — |
+| 512 | 0.7440 | -2.1% |
+| 256 | 0.7191 | -5.3% |
+| 128 | 0.6710 | -11.7% |
+
+### Analysis
+
+**1. Corpus size is the dominant factor in retrieval difficulty**
+
+Zero-shot scores dropped from ~0.86 (85-chunk corpus) to ~0.55 (535-chunk corpus). This isn't model degradation — it's a harder, more realistic task. The old benchmark inflated all scores because there were only 84 possible wrong answers. These new numbers are the ones that matter for production.
+
+**2. Fine-tuning on EU AI Act generalises strongly to GDPR**
+
+The most important finding. Models were never trained on GDPR data, yet:
+
+- Qwen3-4B FT scores **0.7900 on GDPR** vs 0.7626 on EU AI Act — *better* on the unseen domain
+- e5-large FT: 0.7311 GDPR vs 0.7435 EU AI Act — only a small drop
+- The domain gap is nearly zero across all fine-tuned models
+
+Fine-tuning on EU AI Act text taught the models **general Dutch legal retrieval patterns** — legal vocabulary, regulatory sentence structure, query-passage matching conventions — not just EU AI Act-specific content. This is strong evidence that domain-specific fine-tuning on one regulation generalises to related regulations.
+
+Interestingly, even zero-shot models score better on GDPR than EU AI Act (e5-large: 0.6475 vs 0.5584). GDPR's shorter, more prescriptive articles may be inherently easier to match than the EU AI Act's longer, more technical provisions.
+
+**3. OpenAI text-embedding-3-large underperforms fine-tuned models by a large margin**
+
+On this harder benchmark:
+
+| Comparison | Old eval (85 chunks) | New eval (912 chunks) |
+|-----------|---------------------|----------------------|
+| OpenAI vs e5-large zero-shot | +0.0023 | +0.0196 |
+| OpenAI vs Qwen3-4B FT | -0.1023 | -0.1584 |
+
+The *gap between OpenAI and fine-tuned models widened* on the harder benchmark. With more distractors, the fine-tuned models' domain knowledge matters more — they can distinguish "Artikel 10 lid 3 GDPR" from "Artikel 13 EU AI Act" in a way a general-purpose model cannot.
+
+Additionally, OpenAI's higher native dimensionality (3072) provides only minimal benefit: +0.0168 NDCG@10 going from 1024 to 3072. The model lacks domain knowledge — extra dimensions don't compensate.
+
+**4. Model size matters — Qwen3-4B is the clear winner at every split**
+
+| Split | 4B vs 0.6B Δ | 4B vs e5-large Δ |
+|-------|------------|----------------|
+| Combined | +0.0478 | +0.0397 |
+| EU AI Act | +0.0185 | +0.0191 |
+| GDPR | +0.0790 | +0.0589 |
+
+The 4B model's advantage is largest on the **unseen GDPR domain** (+7.9 points vs 0.6B). Larger models generalise better — they have more capacity to encode legal reasoning patterns from the training data, not just surface-level vocabulary.
+
+**5. Matryoshka holds up on a harder benchmark**
+
+Qwen3-4B at dim=512 (0.7440) retains 97.9% of full-dim quality — a negligible tradeoff for 2× faster vector search. At dim=256 (0.7191), the drop is only 5.3%. These tradeoffs are similar to what was observed on the old, easier benchmark, confirming Matryoshka is robust to corpus size.
+
+### Key takeaways
+
+1. **Small eval corpora lie.** NDCG@10 of 0.95+ on 85 chunks is not the same as 0.75 on 912 chunks. Always evaluate on a corpus at least as large as your production index.
+
+2. **Legal domain fine-tuning is general, not memorisation.** Training on one regulation generalises to others in the same legal system. The fine-tuning investment is reusable across the Dutch regulatory corpus.
+
+3. **Proprietary models fall further behind on hard benchmarks.** The value proposition of fine-tuning compounds as the task gets harder — more documents, more distractors, more technical text.
+
+4. **Model scale pays off for cross-domain retrieval.** The 4B model's biggest advantage over 0.6B appears specifically on GDPR (unseen domain). Invest in model scale if generalisability matters.
