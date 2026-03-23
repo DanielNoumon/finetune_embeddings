@@ -567,7 +567,18 @@ if __name__ == "__main__":
         if not append_path.is_absolute():
             append_path = PROJECT_ROOT / append_path
         with open(append_path, encoding="utf-8") as f:
-            all_results = json.load(f)
+            loaded = json.load(f)
+        # Convert string dimension keys back to int
+        all_results = {
+            model_name: {
+                eval_set: {
+                    int(dim): metrics
+                    for dim, metrics in dim_data.items()
+                }
+                for eval_set, dim_data in eval_data.items()
+            }
+            for model_name, eval_data in loaded.items()
+        }
         print(f"Loaded {len(all_results)} existing model(s) from {append_path.name}")
 
     configs_to_run = MODEL_CONFIGS
