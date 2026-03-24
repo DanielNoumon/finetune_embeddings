@@ -1089,3 +1089,48 @@ Qwen3-4B at dim=512 (0.7440) retains 97.9% of full-dim quality — a negligible 
 4. **Small eval corpora lie.** NDCG@10 of 0.95+ on 85 chunks drops to 0.76 on 912 chunks for the same model. Always evaluate on a corpus at least as large as your production index.
 
 5. **GDPR is inherently easier than EU AI Act.** All models score +6-9 pts higher on GDPR zero-shot. This is a corpus property to account for when interpreting cross-domain results.
+
+---
+
+## Step 14 — Qwen3-Embedding-8B Fine-tuning (LoRA)
+
+### Motivation
+
+Steps 1–12 showed that model scale matters: 4B LoRA outperformed 0.6B full fine-tuning on both in-domain and cross-domain benchmarks. The natural question: does scaling to 8B push the frontier further, or have we hit diminishing returns?
+
+Qwen3-Embedding-8B is the largest model in the Qwen3-Embedding family (7.6B params, 4096-dim embeddings, #1 on MTEB multilingual leaderboard). It requires LoRA on our 32GB RTX 5090 — base weights alone consume ~16GB in bf16.
+
+### Setup
+
+**LoRA configuration:** Same as 4B — rank 16, alpha 32, targeting q/k/v/o projections. This yields 15.3M trainable parameters (0.20% of 7.6B total).
+
+**VRAM constraints:** The 8B model pushes the RTX 5090 to its absolute limit:
+- `mini_batch_size=1` for both Stage 1 and Stage 2 (mini_batch=2 OOMs even with flash_attention_2)
+- `eval_batch_size=1` during training (end-of-epoch eval OOMs at batch=2 because training state still in VRAM)
+- PEFT wrapper must be merged before any evaluation (adapter overhead causes OOM on 8B)
+
+**flash_attention_2:** Now installed on the GPU machine. The model loads with flash attention automatically (the scripts try it first). This reduces attention memory from O(N²) to O(N), but the savings weren't enough to allow mini_batch=2 for the 8B model.
+
+### Stage 1 results (EU AI Act eval set)
+
+| Dim | Zero-shot | Stage 1 | Δ |
+|-----|-----------|---------|---|
+| 4096 | 0.8962 | **0.9682** | +0.072 |
+| 1024 | 0.8836 | **0.9625** | +0.079 |
+| 768 | 0.8825 | **0.9607** | +0.078 |
+| 512 | 0.8774 | **0.9577** | +0.080 |
+| 256 | 0.8704 | **0.9524** | +0.082 |
+| 128 | 0.8369 | **0.9238** | +0.087 |
+
+Training completed all 3 epochs (48 steps). The script OOM'd during post-training evaluation, but checkpoints were saved by the Trainer. Recovery script loaded each checkpoint, merged LoRA, evaluated, and saved the best (checkpoint-48, epoch 3).
+
+### Operational learnings
+
+1. **Checkpoint recovery is essential for 8B.** Training state + eval = OOM. Always have `save_strategy="epoch"` so you can recover from post-training crashes.
+2. **Always merge LoRA before eval on 8B.** The PEFT wrapper's bookkeeping overhead is enough to cause OOM. Call `merge_and_unload()` first.
+3. **Delete models between checkpoint evaluations.** Two 8B models in VRAM = 32GB = full GPU. Save to disk immediately, free GPU, then load the next checkpoint.
+4. **flash_attention_2 helps but doesn't change batch limits.** The bottleneck on 8B is total model footprint, not attention memory.
+
+### Stage 2 and cross-domain evaluation
+
+*In progress — mining hard negatives and running Stage 2 fine-tuning. Results will be added here and incorporated into the Step 13 analysis tables.*

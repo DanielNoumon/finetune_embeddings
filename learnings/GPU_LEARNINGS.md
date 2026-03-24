@@ -733,4 +733,98 @@ learning_rate = 1e-5             # Stage 2
 
 ---
 
-*Last updated: March 2026. Includes Qwen3-0.6B, Qwen3-4B LoRA, and PEFT checkpoint findings.*
+## Qwen3-Embedding-8B with LoRA on Blackwell
+
+The 8B model pushes the RTX 5090's 32GB VRAM to its absolute limit. With LoRA (r=16, targeting q/k/v/o_proj):
+- Base weights (bf16): ~16 GB (frozen, no gradients)
+- Trainable LoRA weights: 15.3M params (~0.03 GB)
+- Adam optimizer for LoRA weights: ~0.12 GB
+- **Fixed overhead: ~16.15 GB** — leaving only ~16 GB for activations and PyTorch overhead
+
+### flash_attention_2 now available
+
+After installing `flash-attn`, the model loads with `flash_attention_2` instead of falling back to SDPA. Flash attention computes attention in O(N) memory instead of O(N²), which saves meaningful VRAM at long sequence lengths. However, for the 8B model, the savings were not enough to increase mini_batch_size.
+
+### mini_batch_size: everything must be 1
+
+The 8B model is 2× larger than the 4B model. Even with flash_attention_2, every batch size > 1 OOMs:
+
+| Setting | mini_batch=2 | mini_batch=1 |
+|---------|-------------|-------------|
+| Stage 1 training (2 cols) | OOM ❌ | Fits ✅ |
+| Stage 1 eval (during training) | OOM ❌ | Fits ✅ |
+| Stage 2 training (3 cols) | — | Fits ✅ |
+| Inference (no training state) | eval_batch=2 ✅ | eval_batch=1 ✅ |
+
+**Key nuance:** `eval_batch_size=2` works for standalone inference (just model weights in VRAM), but OOMs during in-trainer evaluation because training state (optimizer, gradients, cached embeddings) still occupies memory. We had to set `EVAL_BATCH_SIZE=1` for Stage 1 after the script crashed at the end-of-epoch eval.
+
+### PEFT wrapper overhead during inference
+
+Loading a model as `base + PeftModel.from_pretrained()` adds memory overhead from the adapter wrapper: duplicate weight references, extra bookkeeping tensors, and the LoRA computation graph. For the 8B model, this overhead is enough to cause OOM during inference even with eval_batch=1.
+
+**Fix:** Always `merge_and_unload()` before evaluation:
+
+```python
+peft_model = PeftModel.from_pretrained(inner, adapter_path)
+merged = peft_model.merge_and_unload()  # Merges LoRA into base weights
+model[0].auto_model = merged
+del peft_model
+torch.cuda.empty_cache()
+# Now evaluate — model is same size as base with no PEFT overhead
+```
+
+This also applies to the recovery/upload scripts: never evaluate with the PEFT wrapper active on the 8B model.
+
+### Checkpoint recovery
+
+Training completed all 3 epochs but the script OOM'd during the final evaluation (before `save_pretrained`). The Trainer's `save_strategy="epoch"` saved checkpoints at each epoch. Recovery approach:
+
+1. Load base model
+2. For each checkpoint: load adapter → merge → evaluate → save if best → delete from GPU
+3. Critical: delete each model from GPU before loading the next (two 8B models = 32GB = full VRAM)
+
+`save_total_limit=2` meant only checkpoint-32 (epoch 2) and checkpoint-48 (epoch 3) were available. Checkpoint-48 won (0.9682 vs 0.9650 NDCG@10 at dim=4096).
+
+### Results (NDCG@10 on EU AI Act eval set, dim=4096)
+
+| Stage | NDCG@10 | Δ from zero-shot |
+|-------|---------|-----------------|
+| Zero-shot | 0.8962 | — |
+| Stage 1 (3 epochs, checkpoint-48) | **0.9682** | +0.072 |
+
+Comparison with 4B (at dim=1024 for apple-to-apple):
+- 8B zero-shot: 0.8836
+- 4B zero-shot: ~0.88 (EU AI Act eval)
+- 8B Stage 1: 0.9625
+- 4B Stage 2 (best): 0.9658
+
+The 8B model's zero-shot baseline is already higher, and Stage 1 alone nearly matches the 4B's best Stage 2 result.
+
+### Quick reference config
+
+```python
+bf16 = True
+attn_implementation = "flash_attention_2"  # installed; falls back to sdpa/eager
+gradient_checkpointing = False
+
+# LoRA config
+lora_r = 16
+lora_alpha = 32
+lora_dropout = 0.05
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+# → 15.3M / 7583M trainable (0.20%)
+
+# CachedMNRL
+per_device_train_batch_size = 128
+mini_batch_size = 1              # Both stages — 8B leaves no headroom
+eval_batch_size = 1              # Must be 1 during in-trainer eval
+learning_rate = 1e-4             # Stage 1
+learning_rate = 1e-5             # Stage 2
+
+# load_best_model_at_end = False  # broken with PEFT+ST
+# Always merge_and_unload() before evaluation (PEFT overhead causes OOM)
+```
+
+---
+
+*Last updated: March 2026. Includes Qwen3-0.6B, Qwen3-4B LoRA, Qwen3-8B LoRA, and PEFT checkpoint findings.*
