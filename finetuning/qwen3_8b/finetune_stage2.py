@@ -190,6 +190,22 @@ def build_evaluators(
     return eval_suite, primary_metric
 
 
+def _find_adapter_dir(ckpt_dir: Path):
+    """Search for adapter_config.json in common checkpoint layouts."""
+    candidates = [
+        ckpt_dir / "0_Transformer",
+        ckpt_dir / "0_Transformer" / "model",
+        ckpt_dir,
+    ]
+    for c in candidates:
+        if (c / "adapter_config.json").exists():
+            return c
+    # Recursive fallback
+    for p in ckpt_dir.rglob("adapter_config.json"):
+        return p.parent
+    return None
+
+
 def select_and_save_best_checkpoint(
     output_dir: Path,
     stage1_dir: Path,
@@ -204,7 +220,7 @@ def select_and_save_best_checkpoint(
     We reload Stage 1, apply the checkpoint adapter, evaluate, and keep
     whichever checkpoint scores highest on primary_metric.
 
-    Returns the eval results dict for the best checkpoint.
+    Returns the eval results dict for the best checkpoint, or None.
     """
     ckpt_dirs = sorted(
         [d for d in output_dir.iterdir()
@@ -218,16 +234,30 @@ def select_and_save_best_checkpoint(
     best_results = None
 
     for ckpt_dir in ckpt_dirs:
-        adapter_dir = ckpt_dir / "0_Transformer"
-        if not (adapter_dir / "adapter_config.json").exists():
-            print(f"  Skipping {ckpt_dir.name}: no adapter_config.json")
+        adapter_dir = _find_adapter_dir(ckpt_dir)
+        if adapter_dir is None:
+            # List contents for debugging
+            contents = [p.name for p in ckpt_dir.iterdir()]
+            print(
+                f"  Skipping {ckpt_dir.name}: "
+                f"no adapter_config.json found\n"
+                f"    Contents: {contents}"
+            )
             continue
+        print(f"  Adapter found at: {adapter_dir}")
 
         print(f"\nEvaluating {ckpt_dir.name}...")
         ckpt_model = load_stage1_model(stage1_dir, base_model_name)
         inner = ckpt_model[0].auto_model
-        peft_model = PeftModel.from_pretrained(inner, str(adapter_dir))
-        ckpt_model[0].auto_model = peft_model
+        peft_model = PeftModel.from_pretrained(
+            inner, str(adapter_dir)
+        )
+        # Merge LoRA into base weights BEFORE eval to free adapter
+        # memory — PEFT wrapper overhead causes OOM on 8B
+        merged = peft_model.merge_and_unload()
+        ckpt_model[0].auto_model = merged
+        del peft_model
+        torch.cuda.empty_cache()
 
         results = eval_suite(ckpt_model)
         score = results[primary_metric]
@@ -236,10 +266,8 @@ def select_and_save_best_checkpoint(
         if score > best_score:
             best_score = score
             best_results = results
-            merged = peft_model.merge_and_unload()
-            ckpt_model[0].auto_model = merged
             ckpt_model.save_pretrained(str(final_path))
-            print(f"  New best ({score:.4f}) → saved to {final_path}")
+            print(f"  New best ({score:.4f}) \u2192 saved to {final_path}")
 
         del ckpt_model
         torch.cuda.empty_cache()
@@ -500,4 +528,8 @@ if __name__ == "__main__":
     )
     print(f"\nFinal model saved to: {final_path}")
 
-    print_summary(base_results, final_results, MATRYOSHKA_DIMS)
+    if final_results is not None:
+        print_summary(base_results, final_results, MATRYOSHKA_DIMS)
+    else:
+        print("\nWARNING: No checkpoint had an adapter. "
+              "Using in-trainer eval results above.")
