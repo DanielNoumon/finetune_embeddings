@@ -42,7 +42,9 @@ Fine-tunes multilingual embedding models for semantic search and retrieval on Du
 │   ├── upload_dataset.py       # Upload dataset to HuggingFace
 │   ├── upload_readme.py        # Upload dataset card
 │   └── DATASET_CARD.md         # Complete dataset documentation
-├── model_cards/                # Model documentation (gitignored)
+├── cards/
+│   ├── model_cards/            # Model documentation for HuggingFace
+│   └── dataset_cards/          # Dataset documentation (gitignored)
 └── learnings/                  # Personal notes & process docs (gitignored)
 ```
 

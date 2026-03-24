@@ -30,7 +30,7 @@ EVAL_DIR = PROJECT_ROOT / "data" / "processed" / "eval"
 
 HF_REPO_ID = "danielnoumon/qwen3-embedding-8b-ai-act-nl"
 MODEL_CARD_PATH = (
-    PROJECT_ROOT / "model_cards" / "MODEL_CARD_QWEN3_8B.md"
+    PROJECT_ROOT / "cards" / "model_cards" / "MODEL_CARD_QWEN3_8B.md"
 )
 
 QUERY_PROMPT = (

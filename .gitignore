@@ -43,8 +43,8 @@ env/
 .DS_Store
 Thumbs.db
 
-# Dataset cards
-dataset_cards/DATASET_CARD_*.md
+# Cards (model cards & dataset cards)
+cards/dataset_cards/DATASET_CARD_*.md
 
 # Project specific
 data/synthetic/*.jsonl

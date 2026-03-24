@@ -805,16 +805,6 @@ Comparison with 4B (at dim=1024 for apple-to-apple):
 
 The 8B model's zero-shot baseline is already higher, and Stage 1 alone nearly matches the 4B's best Stage 2 result.
 
-### Combined benchmark (912 chunks, NDCG@10 @ dim=1024)
-
-| Split | Zero-shot | Fine-tuned | Δ |
-|-------|-----------|------------|---|
-| Combined | 0.6683 | **0.7744** | +0.1061 |
-| EU AI Act | 0.6369 | **0.7748** | +0.1379 |
-| GDPR | 0.7348 | **0.8053** | +0.0705 |
-
-Going from 4B → 8B fine-tuned gives only +1.5 pts on the combined benchmark (0.7596 → 0.7744), showing sharply diminishing returns at this scale. The 4B model is the practical sweet spot.
-
 ### Quick reference config
 
 ```python

@@ -73,7 +73,10 @@ if __name__ == "__main__":
     REPO_ID = "danielnoumon/eu-regulations-nl-queries"
 
     # Dataset card to upload as README.md
-    DATASET_CARD = PROJECT_ROOT / "dataset_cards" / "DATASET_CARD_eu_regulations_combined.md"
+    DATASET_CARD = (
+        PROJECT_ROOT / "cards" / "dataset_cards"
+        / "DATASET_CARD_eu_regulations_combined.md"
+    )
 
     # Whether to make the dataset private
     PRIVATE = False

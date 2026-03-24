@@ -33,7 +33,10 @@ STAGE2_DIR = PROJECT_ROOT / "models" / "qwen3_4b_stage2"
 EVAL_DIR = PROJECT_ROOT / "data" / "processed" / "eval"
 
 HF_REPO_ID = "danielnoumon/qwen3-embedding-4b-ai-act-nl"
-MODEL_CARD_PATH = PROJECT_ROOT / "model_cards" / "MODEL_CARD_QWEN3_4B.md"
+MODEL_CARD_PATH = (
+    PROJECT_ROOT / "cards" / "model_cards"
+    / "MODEL_CARD_QWEN3_4B.md"
+)
 
 QUERY_PROMPT = (
     "Instruct: Given a question about EU AI regulation, "
