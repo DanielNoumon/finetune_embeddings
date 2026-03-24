@@ -91,6 +91,19 @@ MODEL_CONFIGS: list[ModelConfig] = [
         },
         tokenizer_kwargs={"padding_side": "left"},
     ),
+    ModelConfig(
+        name="Qwen3-4B (zero-shot)",
+        model_path="Qwen/Qwen3-Embedding-4B",
+        model_type="st",
+        dims=[1024, 512, 256, 128],
+        query_prompt=_REG_PROMPT,
+        batch_size=16,
+        model_kwargs={
+            "torch_dtype": torch.bfloat16,
+            "attn_implementation": "sdpa",
+        },
+        tokenizer_kwargs={"padding_side": "left"},
+    ),
     # --- Fine-tuned on EU AI Act (from HF Hub) ---
     ModelConfig(
         name="multilingual-e5-large (EU AI Act FT)",
