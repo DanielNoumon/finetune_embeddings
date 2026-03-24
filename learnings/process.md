@@ -1029,59 +1029,50 @@ Three eval JSON sets were generated from `hf_dataset.parquet` using `evaluation/
 
 ### Analysis
 
-**1. Corpus size is the dominant factor in retrieval difficulty**
+**1. Fine-tuning on one legal domain transfers to another**
 
-Zero-shot scores dropped from ~0.86 (85-chunk corpus) to ~0.55 (535-chunk corpus). This isn't model degradation — it's a harder, more realistic task. The old benchmark inflated all scores because there were only 84 possible wrong answers. These new numbers are the ones that matter for production.
+The most important result. All models were fine-tuned **only** on EU AI Act data, yet every one improved substantially on GDPR:
 
-**2. GDPR is inherently easier to retrieve — all models show this pattern**
+| Model | EU AI Act lift | GDPR lift | Transfer ratio |
+|-------|---------------|-----------|----------------|
+| e5-large | +18.5 pts | **+8.4 pts** | 45% |
+| Qwen3-0.6B | +20.9 pts | **+11.0 pts** | 53% |
+| Qwen3-4B | +13.5 pts | **+7.2 pts** | 53% |
 
-All models (zero-shot and fine-tuned) score higher on GDPR than EU AI Act:
+The transfer ratio is remarkably consistent: **roughly half** the training-domain improvement carries over to the unseen domain, across three different model architectures. This suggests the models learn transferable Dutch legal retrieval patterns — legal vocabulary, regulatory sentence structure, query-passage matching conventions — not just EU AI Act-specific content.
 
-| Model | EU AI Act | GDPR | GDPR advantage |
-|-------|-----------|------|----------------|
-| e5-large zero-shot | 0.5584 | 0.6475 | +8.9 pts |
-| Qwen3-0.6B zero-shot | 0.5349 | 0.6007 | +6.6 pts |
-| **Qwen3-4B zero-shot** | **0.6274** | **0.7179** | **+9.1 pts** |
-| e5-large FT | 0.7435 | 0.7311 | -1.2 pts |
-| Qwen3-0.6B FT | 0.7441 | 0.7110 | -3.3 pts |
-| Qwen3-4B FT | 0.7626 | 0.7900 | +2.7 pts |
+**Confound — GDPR is inherently easier:** All models (zero-shot and fine-tuned) score higher on GDPR than EU AI Act. Zero-shot GDPR advantages range from +6.6 pts (0.6B) to +9.1 pts (4B). GDPR's shorter, more prescriptive articles are inherently easier to match. This doesn't negate the transfer finding — it just means the absolute GDPR scores are inflated by corpus difficulty, not just by generalisation. The transfer ratio (computed from deltas, not absolutes) controls for this.
 
-**Key finding:** Qwen3-4B zero-shot shows the **largest GDPR advantage** of any model (+9.1 pts). This proves the fine-tuned model's GDPR performance (0.79) is **not** cross-domain generalisation — it's simply inheriting and slightly reducing the base model's pre-existing bias toward GDPR text.
+**2. Fine-tuning beats model scale**
 
-**What actually happened during fine-tuning:**
-- Qwen3-4B zero-shot: EU AI Act 0.6274, GDPR 0.7179 (gap: +9.1 pts)
-- Qwen3-4B fine-tuned: EU AI Act 0.7626, GDPR 0.7900 (gap: +2.7 pts)
+| Model | Combined NDCG@10 | Strategy |
+|-------|-----------------|----------|
+| Qwen3-4B zero-shot | 0.6494 | Scale only |
+| Qwen3-0.6B fine-tuned | **0.7118** | Fine-tuning only |
+| Qwen3-4B fine-tuned | **0.7596** | Both |
 
-Fine-tuning **improved both domains** (+13.5 pts on EU AI Act, +7.2 pts on GDPR) but **narrowed the gap** from 9.1 to 2.7 points. The model became more balanced, not more generalizable. It learned EU AI Act patterns so well that it partially overcame its natural preference for GDPR-style text.
+A fine-tuned 0.6B model (+6.2 pts over 4B zero-shot) outperforms a 4B model with 7× more parameters. Fine-tuning on ~2,000 synthetic pairs closes a massive parameter gap. But combining scale with fine-tuning gives the best result — the 4B fine-tuned model leads by +4.8 pts over the 0.6B fine-tuned model.
 
-**Why GDPR is easier:** GDPR has shorter, more prescriptive articles with clearer structure. EU AI Act has longer, more technical provisions with complex cross-references. This is a corpus property, not a model characteristic — every model tested (3 zero-shot, 3 fine-tuned) scores higher on GDPR.
+**3. Open-source zero-shot already beats proprietary SOTA**
 
-**3. OpenAI text-embedding-3-large underperforms fine-tuned models by a large margin**
+Qwen3-4B zero-shot outperforms OpenAI `text-embedding-3-large` on every split:
 
-On this harder benchmark:
+| Split | Qwen3-4B ZS | OpenAI | Δ |
+|-------|------------|--------|---|
+| Combined | 0.6494 | 0.6012 | +4.8 pts |
+| EU AI Act | 0.6274 | 0.5682 | +5.9 pts |
+| GDPR | 0.7179 | 0.6733 | +4.5 pts |
+
+This was not visible on the old 85-chunk benchmark where OpenAI (0.8635) slightly edged out e5-large zero-shot (0.8612). On the harder, more realistic benchmark, the open-source 4B model wins without any fine-tuning at all.
+
+**4. The gap widens on harder benchmarks**
 
 | Comparison | Old eval (85 chunks) | New eval (912 chunks) |
 |-----------|---------------------|----------------------|
-| OpenAI vs e5-large zero-shot | +0.0023 | +0.0196 |
+| OpenAI vs e5-large ZS | +0.0023 | +0.0196 |
 | OpenAI vs Qwen3-4B FT | -0.1023 | -0.1584 |
 
-The *gap between OpenAI and fine-tuned models widened* on the harder benchmark. With more distractors, the fine-tuned models' domain knowledge matters more — they can distinguish "Artikel 10 lid 3 GDPR" from "Artikel 13 EU AI Act" in a way a general-purpose model cannot.
-
-Additionally, OpenAI's higher native dimensionality (3072) provides only minimal benefit: +0.0168 NDCG@10 going from 1024 to 3072. The model lacks domain knowledge — extra dimensions don't compensate.
-
-**4. Model size matters — both zero-shot and fine-tuned**
-
-Comparing Qwen3-4B vs Qwen3-0.6B across all splits:
-
-| Split | 4B ZS vs 0.6B ZS | 4B FT vs 0.6B FT |
-|-------|-----------------|-----------------|
-| Combined | +0.1046 | +0.0478 |
-| EU AI Act | +0.0925 | +0.0185 |
-| GDPR | +0.1172 | +0.0790 |
-
-**Zero-shot:** The 4B model outperforms 0.6B by +9-12 points across all splits. Larger models have better base retrieval capability.
-
-**Fine-tuned:** The gap narrows to +2-8 points. Fine-tuning helps smaller models catch up, but the 4B model still wins. The largest remaining gap is on GDPR (+7.9 pts), which makes sense — GDPR wasn't in the training data, so the 4B model's larger capacity for generalisation matters more there.
+The harder the benchmark, the more fine-tuning and model scale matter. OpenAI's higher native dimensionality (3072) provides minimal benefit: only +0.0168 going from 1024 to 3072. Domain knowledge beats dimensionality.
 
 **5. Matryoshka holds up on a harder benchmark**
 
@@ -1089,12 +1080,12 @@ Qwen3-4B at dim=512 (0.7440) retains 97.9% of full-dim quality — a negligible 
 
 ### Key takeaways
 
-1. **Small eval corpora lie.** NDCG@10 of 0.95+ on 85 chunks is not the same as 0.75 on 912 chunks. Always evaluate on a corpus at least as large as your production index.
+1. **Fine-tuning transfers across legal domains.** ~50% of training-domain improvement carries over to unseen GDPR text, consistently across three model architectures. Training on one Dutch regulation produces a model that is meaningfully better at retrieving from other Dutch regulations too.
 
-2. **GDPR is easier to retrieve than EU AI Act across all models.** Zero-shot models score +6-9 points higher on GDPR. This is likely a corpus property (shorter articles, clearer structure) rather than a model characteristic.
+2. **Fine-tuning > scale.** A fine-tuned 0.6B model beats a zero-shot 4B model by +6.2 pts. For domain-specific retrieval, targeted training on a small dataset outweighs a 7× parameter increase.
 
-3. **Proprietary models fall further behind on hard benchmarks.** The value proposition of fine-tuning compounds as the task gets harder — more documents, more distractors, more technical text.
+3. **Open-source beats proprietary on domain tasks.** Qwen3-4B zero-shot already outperforms OpenAI `text-embedding-3-large` by +4.8 pts on this benchmark. After fine-tuning, the gap widens to +15.8 pts.
 
-4. **Model scale matters.** The 4B model outperforms 0.6B by +4-8 points depending on the split. Larger models have more capacity to encode domain-specific patterns.
+4. **Small eval corpora lie.** NDCG@10 of 0.95+ on 85 chunks drops to 0.76 on 912 chunks for the same model. Always evaluate on a corpus at least as large as your production index.
 
-5. **Fine-tuning improves both seen and unseen domains, but doesn't create cross-domain preference.** Qwen3-4B fine-tuning improved EU AI Act by +13.5 pts and GDPR by +7.2 pts. The model learned EU AI Act patterns so well that it narrowed the GDPR advantage from +9.1 pts (zero-shot) to +2.7 pts (fine-tuned), making it more balanced across domains.
+5. **GDPR is inherently easier than EU AI Act.** All models score +6-9 pts higher on GDPR zero-shot. This is a corpus property to account for when interpreting cross-domain results.
