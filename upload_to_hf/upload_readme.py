@@ -60,7 +60,7 @@ if __name__ == "__main__":
     
     # Path to the dataset card file
     DEFAULT_README_PATH = (
-        Path(__file__).resolve().parent / "DATASET_CARD.md"
+        Path(__file__).resolve().parent.parent / "dataset_cards" / "DATASET_CARD.md"
     )
     
     # Default repository ID (change to your username/dataset-name)

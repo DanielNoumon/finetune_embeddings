@@ -44,7 +44,7 @@ env/
 Thumbs.db
 
 # Dataset cards
-upload_to_hf/DATASET_CARD_*.md
+dataset_cards/DATASET_CARD_*.md
 
 # Project specific
 data/synthetic/*.jsonl

@@ -186,7 +186,7 @@ doc_emb = model.encode(["your document here"])
 - **Train**: 1,944 synthetic query-chunk pairs
 - **Eval**: 340 queries × 85 chunks
 - **Split strategy**: Chunk-level (no chunk appears in both train and eval)
-- **Query generation**: Azure OpenAI GPT-4o-mini with structured prompts
+- **Query generation**: GPT-5-mini (Azure OpenAI) with structured prompts
 
 ### Hardware Notes
 

@@ -791,6 +791,11 @@ Training completed all 3 epochs but the script OOM'd during the final evaluation
 |-------|---------|-----------------|
 | Zero-shot | 0.8962 | — |
 | Stage 1 (3 epochs, checkpoint-48) | **0.9682** | +0.072 |
+| Stage 2 (2 epochs, checkpoint-16) | 0.9675 | +0.071 |
+
+**Stage 2 did not improve over Stage 1** at the primary dim=4096 metric. At lower dims (768, 512, 256, 128) Stage 2 showed marginal gains (+0.001–0.002), but the primary metric regressed by 0.0007. With 127 in-batch negatives from GradCache, the contrastive signal is already saturated — explicit hard negatives provide no additional benefit. This is consistent with findings on 0.6B and 4B.
+
+**Uploaded model uses Stage 1 checkpoint.**
 
 Comparison with 4B (at dim=1024 for apple-to-apple):
 - 8B zero-shot: 0.8836
@@ -799,6 +804,16 @@ Comparison with 4B (at dim=1024 for apple-to-apple):
 - 4B Stage 2 (best): 0.9658
 
 The 8B model's zero-shot baseline is already higher, and Stage 1 alone nearly matches the 4B's best Stage 2 result.
+
+### Combined benchmark (912 chunks, NDCG@10 @ dim=1024)
+
+| Split | Zero-shot | Fine-tuned | Δ |
+|-------|-----------|------------|---|
+| Combined | 0.6683 | **0.7744** | +0.1061 |
+| EU AI Act | 0.6369 | **0.7748** | +0.1379 |
+| GDPR | 0.7348 | **0.8053** | +0.0705 |
+
+Going from 4B → 8B fine-tuned gives only +1.5 pts on the combined benchmark (0.7596 → 0.7744), showing sharply diminishing returns at this scale. The 4B model is the practical sweet spot.
 
 ### Quick reference config
 
