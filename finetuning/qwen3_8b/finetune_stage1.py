@@ -252,7 +252,7 @@ if __name__ == "__main__":
     BATCH_SIZE = 128
     MINI_BATCH_SIZE = 1   # 8B OOMs with mini_batch=2 even with flash_attention_2
     GRAD_ACCUM = 1
-    EVAL_BATCH_SIZE = 2
+    EVAL_BATCH_SIZE = 1   # 2 OOMs during in-trainer eval (training state in VRAM)
     EPOCHS = 3
     LR = 1e-4  # Higher LR typical for LoRA
     WARMUP_RATIO = 0.1

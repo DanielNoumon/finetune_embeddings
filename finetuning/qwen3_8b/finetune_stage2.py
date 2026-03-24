@@ -357,7 +357,7 @@ if __name__ == "__main__":
     BATCH_SIZE = 128
     MINI_BATCH_SIZE = 1   # Stage 2 has 3 cols (anchor+pos+neg) — keep at 1
     GRAD_ACCUM = 1
-    EVAL_BATCH_SIZE = 2
+    EVAL_BATCH_SIZE = 1   # 2 OOMs during in-trainer eval (training state in VRAM)
     EPOCHS = 2
     LR = 1e-5             # 10× lower than Stage 1
     WARMUP_RATIO = 0.05
