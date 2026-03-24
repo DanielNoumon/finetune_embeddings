@@ -119,15 +119,17 @@ if __name__ == "__main__":
 
         if score > best_score:
             best_score = score
-            best_model = model
-            print(f"  New best! Saving to {FINAL_PATH}")
-        else:
-            del model
-            torch.cuda.empty_cache()
+            best_ckpt = ckpt_dir.name
+            # Save immediately and free GPU memory for next checkpoint
+            model.save_pretrained(str(FINAL_PATH))
+            print(f"  New best! Saved to {FINAL_PATH}")
 
-    if best_model is None:
+        del model
+        torch.cuda.empty_cache()
+
+    if best_score < 0:
         raise RuntimeError("No valid checkpoints found.")
 
-    best_model.save_pretrained(str(FINAL_PATH))
-    print(f"\nFinal model saved to: {FINAL_PATH}")
+    print(f"\nBest checkpoint: {best_ckpt}")
     print(f"Best {PRIMARY_METRIC}: {best_score:.4f}")
+    print(f"Final model at: {FINAL_PATH}")
