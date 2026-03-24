@@ -1038,8 +1038,9 @@ The most important result. All models were fine-tuned **only** on EU AI Act data
 | e5-large | +18.5 pts | **+8.4 pts** | 45% |
 | Qwen3-0.6B | +20.9 pts | **+11.0 pts** | 53% |
 | Qwen3-4B | +13.5 pts | **+7.2 pts** | 53% |
+| Qwen3-8B | +13.8 pts | **+7.1 pts** | 51% |
 
-The transfer ratio is remarkably consistent: **roughly half** the training-domain improvement carries over to the unseen domain, across three different model architectures. This suggests the models learn transferable Dutch legal retrieval patterns — legal vocabulary, regulatory sentence structure, query-passage matching conventions — not just EU AI Act-specific content.
+The transfer ratio is remarkably consistent: **roughly half** the training-domain improvement carries over to the unseen domain, across four different model scales. This suggests the models learn transferable Dutch legal retrieval patterns — legal vocabulary, regulatory sentence structure, query-passage matching conventions — not just EU AI Act-specific content.
 
 **Confound — GDPR is inherently easier:** All models (zero-shot and fine-tuned) score higher on GDPR than EU AI Act. Zero-shot GDPR advantages range from +6.6 pts (0.6B) to +9.1 pts (4B). GDPR's shorter, more prescriptive articles are inherently easier to match. This doesn't negate the transfer finding — it just means the absolute GDPR scores are inflated by corpus difficulty, not just by generalisation. The transfer ratio (computed from deltas, not absolutes) controls for this.
 
@@ -1048,10 +1049,12 @@ The transfer ratio is remarkably consistent: **roughly half** the training-domai
 | Model | Combined NDCG@10 | Strategy |
 |-------|-----------------|----------|
 | Qwen3-4B zero-shot | 0.6494 | Scale only |
+| Qwen3-8B zero-shot | 0.6683 | Scale only |
 | Qwen3-0.6B fine-tuned | **0.7118** | Fine-tuning only |
 | Qwen3-4B fine-tuned | **0.7596** | Both |
+| Qwen3-8B fine-tuned | **0.7744** | Both |
 
-A fine-tuned 0.6B model (+6.2 pts over 4B zero-shot) outperforms a 4B model with 7× more parameters. Fine-tuning on ~2,000 synthetic pairs closes a massive parameter gap. But combining scale with fine-tuning gives the best result — the 4B fine-tuned model leads by +4.8 pts over the 0.6B fine-tuned model.
+A fine-tuned 0.6B model (+4.4 pts over 8B zero-shot) outperforms the largest zero-shot model in the family. Fine-tuning on ~2,000 synthetic pairs is worth more than a 13× parameter increase. But combining scale with fine-tuning gives the best result — the 8B fine-tuned model leads overall, though the 4B → 8B gain (+1.5 pts) shows sharply diminishing returns.
 
 **3. Open-source zero-shot already beats proprietary SOTA**
 
@@ -1131,6 +1134,90 @@ Training completed all 3 epochs (48 steps). The script OOM'd during post-trainin
 3. **Delete models between checkpoint evaluations.** Two 8B models in VRAM = 32GB = full GPU. Save to disk immediately, free GPU, then load the next checkpoint.
 4. **flash_attention_2 helps but doesn't change batch limits.** The bottleneck on 8B is total model footprint, not attention memory.
 
-### Stage 2 and cross-domain evaluation
+### Stage 2 results (EU AI Act eval set)
 
-*In progress — mining hard negatives and running Stage 2 fine-tuning. Results will be added here and incorporated into the Step 13 analysis tables.*
+| Dim | Zero-shot | Stage 1 | Stage 2 | Best |
+|-----|-----------|---------|---------|------|
+| 4096 | 0.8962 | **0.9682** | 0.9675 | **0.9682** (S1) |
+| 1024 | 0.8836 | 0.9625 | **0.9625** | **0.9625** (tie) |
+| 768 | 0.8825 | 0.9607 | **0.9629** | **0.9629** (S2) |
+| 512 | 0.8774 | 0.9577 | **0.9587** | **0.9587** (S2) |
+| 256 | 0.8704 | 0.9524 | **0.9535** | **0.9535** (S2) |
+| 128 | 0.8369 | 0.9238 | **0.9253** | **0.9253** (S2) |
+
+Stage 2 (hard negatives mined from Stage 1) produced marginal improvements at lower dims but a slight regression at the primary dim=4096 metric. With 127 in-batch negatives from GradCache already providing a strong contrastive signal, explicit hard negatives offer diminishing returns. The uploaded model uses Stage 1 (best at dim=4096). This is consistent with findings on 0.6B and 4B.
+
+### Combined benchmark results (NDCG@10 @ dim=1024)
+
+| Split | Zero-shot | Fine-tuned | Δ |
+|-------|-----------|------------|---|
+| Combined | 0.6683 | **0.7744** | +0.1061 |
+| EU AI Act | 0.6369 | **0.7748** | +0.1379 |
+| GDPR | 0.7348 | **0.8053** | +0.0705 |
+
+Full metrics on combined eval (dim=1024):
+
+| Metric | Zero-shot | Fine-tuned |
+|--------|-----------|------------|
+| NDCG@10 | 0.6683 | **0.7744** |
+| MRR@10 | 0.6072 | **0.7206** |
+| MAP@100 | 0.6125 | **0.7235** |
+| Accuracy@1 | 0.4768 | **0.5992** |
+| Accuracy@5 | 0.7823 | **0.8808** |
+| Recall@10 | 0.8589 | **0.9410** |
+
+**Qwen3-8B Matryoshka tradeoff on combined eval:**
+
+| Dim | NDCG@10 | Δ vs 1024 |
+|-----|---------|----------|
+| 1024 | 0.7744 | — |
+| 512 | 0.7653 | -1.2% |
+| 256 | 0.7466 | -3.6% |
+| 128 | 0.7143 | -7.8% |
+
+### Analysis — does 8B push the frontier?
+
+**1. Scale continues to help, but with diminishing returns**
+
+| Model | Combined NDCG@10 | Δ vs previous |
+|-------|-----------------|---------------|
+| Qwen3-0.6B FT | 0.7118 | — |
+| Qwen3-4B FT | 0.7596 | +0.0478 |
+| Qwen3-8B FT | **0.7744** | +0.0148 |
+
+Going from 0.6B → 4B gave +4.8 pts; going from 4B → 8B gives only +1.5 pts. The 8B model is the best, but the marginal return on scale has sharply diminished. The cost (2× VRAM, mini_batch=1, OOM risk) likely doesn't justify the +1.5 pts for most production use cases.
+
+**2. Cross-domain transfer remains consistent**
+
+| Model | EU AI Act lift | GDPR lift | Transfer ratio |
+|-------|---------------|-----------|----------------|
+| e5-large | +18.5 pts | +8.4 pts | 45% |
+| Qwen3-0.6B | +20.9 pts | +11.0 pts | 53% |
+| Qwen3-4B | +13.5 pts | +7.2 pts | 53% |
+| Qwen3-8B | +13.8 pts | **+7.1 pts** | 51% |
+
+The 8B model shows the same ~50% transfer ratio. Cross-domain generalisation is a property of the fine-tuning approach, not the model scale.
+
+**3. Fine-tuning still beats scale**
+
+| Model | Combined NDCG@10 | Strategy |
+|-------|-----------------|----------|
+| Qwen3-8B zero-shot | 0.6683 | Scale only |
+| Qwen3-0.6B fine-tuned | **0.7118** | Fine-tuning only |
+| Qwen3-4B fine-tuned | **0.7596** | Both |
+| Qwen3-8B fine-tuned | **0.7744** | Both |
+
+A fine-tuned 0.6B model (+4.4 pts over 8B zero-shot) still outperforms the largest zero-shot model in the family. Fine-tuning on ~2,000 synthetic pairs is worth more than a 13× parameter increase.
+
+**4. Matryoshka holds up better at 8B**
+
+| Model | dim=512 retention | dim=256 retention |
+|-------|------------------|------------------|
+| Qwen3-4B FT | 97.9% | 94.7% |
+| Qwen3-8B FT | **98.8%** | **96.4%** |
+
+The 8B model loses less quality at lower dimensions, likely because the larger model embeds more information into each dimension.
+
+### Recommendation
+
+**Qwen3-4B is the sweet spot.** It delivers 98% of the 8B's quality at half the VRAM, 4× the training throughput (mini_batch=4 vs 1), and far fewer operational headaches. The 8B model is best for maximum-quality deployments where VRAM and training cost are not constraints.
