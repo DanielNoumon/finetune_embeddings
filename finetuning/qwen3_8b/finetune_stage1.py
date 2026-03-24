@@ -250,9 +250,9 @@ if __name__ == "__main__":
     # Training config — conservative for 8B LoRA on 32GB
     # 8B bf16 = ~16GB weights, leaves ~16GB for activations/optimizer
     BATCH_SIZE = 128
-    MINI_BATCH_SIZE = 1   # 8B is ~2x larger than 4B, halve mini-batch
+    MINI_BATCH_SIZE = 2   # flash_attention_2 available — try 2, fall back to 1 if OOM
     GRAD_ACCUM = 1
-    EVAL_BATCH_SIZE = 1
+    EVAL_BATCH_SIZE = 2
     EPOCHS = 3
     LR = 1e-4  # Higher LR typical for LoRA
     WARMUP_RATIO = 0.1
