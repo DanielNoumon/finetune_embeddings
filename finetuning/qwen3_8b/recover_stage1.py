@@ -102,7 +102,12 @@ if __name__ == "__main__":
         peft_model = PeftModel.from_pretrained(
             inner, str(adapter_dir)
         )
-        model[0].auto_model = peft_model
+        # Merge LoRA into base weights BEFORE eval to free adapter
+        # memory — PEFT wrapper overhead causes OOM on 8B otherwise
+        merged = peft_model.merge_and_unload()
+        model[0].auto_model = merged
+        del peft_model
+        torch.cuda.empty_cache()
 
         results = eval_suite(model)
         score = results[PRIMARY_METRIC]
@@ -114,12 +119,9 @@ if __name__ == "__main__":
 
         if score > best_score:
             best_score = score
-            merged = peft_model.merge_and_unload()
-            model[0].auto_model = merged
             best_model = model
             print(f"  New best! Saving to {FINAL_PATH}")
-
-        if best_model is not model:
+        else:
             del model
             torch.cuda.empty_cache()
 
