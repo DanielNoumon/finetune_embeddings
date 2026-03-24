@@ -104,6 +104,19 @@ MODEL_CONFIGS: list[ModelConfig] = [
         },
         tokenizer_kwargs={"padding_side": "left"},
     ),
+    ModelConfig(
+        name="Qwen3-8B (zero-shot)",
+        model_path="Qwen/Qwen3-Embedding-8B",
+        model_type="st",
+        dims=[1024, 512, 256, 128],
+        query_prompt=_REG_PROMPT,
+        batch_size=8,
+        model_kwargs={
+            "torch_dtype": torch.bfloat16,
+            "attn_implementation": "sdpa",
+        },
+        tokenizer_kwargs={"padding_side": "left"},
+    ),
     # --- Fine-tuned on EU AI Act (from HF Hub) ---
     ModelConfig(
         name="multilingual-e5-large (EU AI Act FT)",
@@ -135,6 +148,19 @@ MODEL_CONFIGS: list[ModelConfig] = [
         dims=[1024, 512, 256, 128],
         query_prompt=_EU_PROMPT,
         batch_size=16,
+        model_kwargs={
+            "torch_dtype": torch.bfloat16,
+            "attn_implementation": "sdpa",
+        },
+        tokenizer_kwargs={"padding_side": "left"},
+    ),
+    ModelConfig(
+        name="Qwen3-8B (EU AI Act FT)",
+        model_path="danielnoumon/qwen3-embedding-8b-ai-act-nl",
+        model_type="st",
+        dims=[1024, 512, 256, 128],
+        query_prompt=_EU_PROMPT,
+        batch_size=8,
         model_kwargs={
             "torch_dtype": torch.bfloat16,
             "attn_implementation": "sdpa",
