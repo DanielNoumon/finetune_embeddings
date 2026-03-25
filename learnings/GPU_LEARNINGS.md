@@ -862,6 +862,31 @@ RTX 5090 TDP is 575W; estimated ~500W average draw during training, ~100W for CP
 - **Training only (GPU+system)**: 3.9h × 0.60 kW ≈ **2.34 kWh**
 - **Conservative total** (incl. eval, hard negative mining, checkpoint recovery): **~3 kWh**
 
+### Cost: local GPU vs cloud
+
+**Local electricity cost (Amsterdam, ~€0.25/kWh):**
+
+- Conservative total: 3 kWh × €0.25 = **€0.75** for the entire project (all 3 models, both stages)
+
+**Equivalent cloud cost (single H100 at ~$2.95/hr):**
+
+An H100 has significantly higher memory bandwidth and tensor core throughput than an RTX 5090. The same training would likely complete in ~1–1.5 hours instead of 3.9 hours, putting a single full experiment cycle at **~$3–5**.
+
+But a single cycle is misleading. Real projects involve many iterations:
+
+| Activity | Typical runs | Est. cloud cost |
+|----------|-------------|-----------------|
+| Failed runs (bugs, config errors) | 10–20 | $30–60 |
+| Hyperparameter tuning | 5–10 | $15–30 |
+| Successful final runs | 6 (3 models × 2 stages) | $20–30 |
+| **Total realistic project cost** | **20–50 runs** | **$100–250** |
+
+On top of that: storage for model checkpoints (~46 GB across all models), and debugging time while the meter is running.
+
+**The hidden cost of cloud: iteration speed.** On a local GPU you can start a run, spot an issue after 5 minutes, kill it, fix it, restart — at zero marginal cost. On cloud, every mistake costs money, which changes your behavior: you become more cautious, batch fewer experiments, and iterate more slowly. This "cost anxiety" tax on iteration speed is arguably the largest hidden cost of cloud training for research and experimentation.
+
+**Bottom line:** Local 5090 cost for this entire project ≈ **€0.75**. Equivalent cloud cost including realistic iteration ≈ **$100–250**. The local GPU pays for itself quickly when experimentation speed matters.
+
 ### Disk footprint of saved models
 
 | Directory | Size |
