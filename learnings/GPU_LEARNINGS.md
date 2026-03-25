@@ -870,7 +870,7 @@ RTX 5090 TDP is 575W; estimated ~500W average draw during training, ~100W for CP
 
 **Equivalent cloud cost (single H100 at ~$2.95/hr):**
 
-An H100 has significantly higher memory bandwidth and tensor core throughput than an RTX 5090. The same training would likely complete in ~1–1.5 hours instead of 3.9 hours, putting a single full experiment cycle at **~$3–5**.
+An H100 has significantly higher memory bandwidth and tensor core throughput than an RTX 5090. The same training would likely complete in roughly 1–1.5 hours instead of 3.9 hours, putting a single full experiment cycle at **~$3–5**.
 
 But a single cycle is misleading. Real projects involve many iterations:
 
