@@ -832,4 +832,47 @@ learning_rate = 1e-5             # Stage 2
 
 ---
 
-*Last updated: March 2026. Includes Qwen3-0.6B, Qwen3-4B LoRA, Qwen3-8B LoRA, and PEFT checkpoint findings.*
+## Training Duration & Energy Consumption
+
+All training on a single NVIDIA RTX 5090 (32GB VRAM, 575W TDP).
+
+### Per-model training time
+
+| Model | Stage | Epochs | ~Time/epoch | ~Total |
+|-------|-------|--------|-------------|--------|
+| Qwen3-0.6B | Stage 1 | 3 | 3.6 min | 11 min |
+| Qwen3-0.6B | Stage 2 | 2 | 7 min | 14 min |
+| Qwen3-4B (LoRA) | Stage 1 | 3 | 13.3 min | 40 min |
+| Qwen3-4B (LoRA) | Stage 2 | 2 | 24.9 min | 50 min |
+| Qwen3-8B (LoRA) | Stage 1 | 3 | 18.3 min | 55 min |
+| Qwen3-8B (LoRA) | Stage 2 | 2 | 32.3 min | 65 min |
+
+**Grand total training time: ~235 min ≈ 3.9 hours**
+
+Times estimated from checkpoint directory timestamps (1-epoch gap between saved checkpoints). Excludes evaluation, hard negative mining, and checkpoint recovery.
+
+### Energy estimate
+
+Assuming ~500W average GPU draw during training + ~100W system overhead:
+
+- **GPU only**: 3.9h × 0.50 kW ≈ **1.95 kWh**
+- **Full system**: 3.9h × 0.60 kW ≈ **2.34 kWh**
+- **Conservative total** (incl. eval, mining, recovery): **~3 kWh**
+
+### Disk footprint of saved models
+
+| Directory | Size |
+|-----------|------|
+| qwen3_stage1 (0.6B) | 7.9 GB |
+| qwen3_stage2 (0.6B) | 7.9 GB |
+| qwen3_4b_stage1 | 349 MB |
+| qwen3_4b_stage2 | 349 MB |
+| qwen3_8b_stage1 | 15 GB |
+| qwen3_8b_stage2 | 15 GB |
+| **Total** | **~46 GB** |
+
+The 4B and 8B directories are small because only LoRA adapters are saved (not the full base model). The 0.6B directories contain full model weights.
+
+---
+
+*Last updated: March 2026. Includes Qwen3-0.6B, Qwen3-4B LoRA, Qwen3-8B LoRA, PEFT checkpoint findings, and training duration/energy estimates.*
