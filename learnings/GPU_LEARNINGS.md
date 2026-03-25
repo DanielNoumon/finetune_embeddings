@@ -838,16 +838,18 @@ All training on a single NVIDIA RTX 5090 (32GB VRAM, 575W TDP).
 
 ### Per-model training time
 
-| Model | Stage | Epochs | ~Time/epoch | ~Total |
-|-------|-------|--------|-------------|--------|
-| Qwen3-0.6B | Stage 1 | 3 | 3.6 min | 11 min |
-| Qwen3-0.6B | Stage 2 | 2 | 7 min | 14 min |
-| Qwen3-4B (LoRA) | Stage 1 | 3 | 13.3 min | 40 min |
-| Qwen3-4B (LoRA) | Stage 2 | 2 | 24.9 min | 50 min |
-| Qwen3-8B (LoRA) | Stage 1 | 3 | 18.3 min | 55 min |
-| Qwen3-8B (LoRA) | Stage 2 | 2 | 32.3 min | 65 min |
+| Model | Stage | Trainable | Samples | Format | Epochs | ~Time/epoch | ~Total |
+|-------|-------|-----------|---------|--------|--------|-------------|--------|
+| Qwen3-0.6B | Stage 1 | 560M (full) | 1,944 | pairs | 3 | 3.6 min | 11 min |
+| Qwen3-0.6B | Stage 2 | 560M (full) | 1,944 | triplets | 2 | 7 min | 14 min |
+| Qwen3-4B (LoRA) | Stage 1 | 11.8M | 1,944 | pairs | 3 | 13.3 min | 40 min |
+| Qwen3-4B (LoRA) | Stage 2 | 11.8M | 1,944 | triplets | 2 | 24.9 min | 50 min |
+| Qwen3-8B (LoRA) | Stage 1 | 15.3M | 1,944 | pairs | 3 | 18.3 min | 55 min |
+| Qwen3-8B (LoRA) | Stage 2 | 15.3M | 1,944 | triplets | 2 | 32.3 min | 65 min |
 
 **Grand total training time: ~235 min ≈ 3.9 hours**
+
+Stage 2 takes ~1.8–1.9× longer per epoch than Stage 1 despite the same sample count: triplets require encoding 3 texts per sample (query + positive + hard negative) vs 2 for pairs, resulting in ~50% more forward passes through the model.
 
 Times estimated from checkpoint directory timestamps (1-epoch gap between saved checkpoints). Excludes evaluation, hard negative mining, and checkpoint recovery.
 
