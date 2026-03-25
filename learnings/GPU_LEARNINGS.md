@@ -849,6 +849,8 @@ All training on a single NVIDIA RTX 5090 (32GB VRAM, 575W TDP).
 
 **Grand total training time: ~235 min ≈ 3.9 hours**
 
+**Why is 0.6B (full fine-tuning) faster than 4B/8B (LoRA) despite training 50× more parameters?** LoRA saves **memory**, not compute. Every training step still runs a full forward and backward pass through the entire model — the frozen weights are still involved in every computation. LoRA only reduces the weight *update* step (tiny fraction of total time) and the optimizer state memory. Training time scales with total model size, not trainable parameters.
+
 Stage 2 takes ~1.8–1.9× longer per epoch than Stage 1 despite the same sample count: triplets require encoding 3 texts per sample (query + positive + hard negative) vs 2 for pairs, resulting in ~50% more forward passes through the model.
 
 Times estimated from checkpoint directory timestamps (1-epoch gap between saved checkpoints). Excludes evaluation, hard negative mining, and checkpoint recovery.
