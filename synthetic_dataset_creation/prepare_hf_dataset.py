@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DOCUMENT_SOURCES = {
     "eu_ai_act_query_pairs": "EU AI Act (NL)",
     "gdpr_query_pairs": "AVG/GDPR (NL)",
+    "uavg_query_pairs": "UAVG (NL)",
 }
 
 
