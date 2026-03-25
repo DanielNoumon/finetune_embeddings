@@ -152,6 +152,61 @@ Metadata:
 Genereer {n} diverse zoekquery's waarvoor bovenstaand fragment het antwoord is.\
 """
 
+SYSTEM_PROMPT_UAVG = """\
+Je bent een expert in de Uitvoeringswet Algemene verordening \
+gegevensbescherming (UAVG) — de Nederlandse implementatiewet van de AVG/GDPR.
+
+Je taak: gegeven een tekstfragment uit de UAVG, genereer {n} diverse \
+zoekquery's in het Nederlands die een gebruiker zou kunnen stellen en waarvoor \
+dit fragment het relevante antwoord bevat.
+
+Regels:
+- Schrijf ALLEEN in het Nederlands.
+- Elke query moet een andere invalshoek hebben. Wissel VERPLICHT af tussen:
+  * Feitelijke vragen ("Welke uitzonderingen kent de UAVG voor bijzondere \
+persoonsgegevens?")
+  * Definitievragen ("Wat zijn persoonsgegevens van strafrechtelijke aard?")
+  * Procedurele vragen ("Hoe legt de Autoriteit persoonsgegevens een boete \
+op?")
+  * Scenariovragen ("Een onderzoeksinstelling wil medische gegevens \
+verwerken zonder toestemming, mag dat?")
+  * Trefwoordzoekopdrachten — korte fragmenten zonder vraagteken, zoals een \
+gebruiker in een zoekveld zou typen ("UAVG uitzonderingen bijzondere \
+gegevens", "boete Autoriteit persoonsgegevens")
+- BELANGRIJK: Genereer minstens 1 procedurele vraag ("Hoe...?", \
+"Welke stappen...?"), 1 scenariovraag ("Een bedrijf/organisatie wil..."), \
+en 1 trefwoordzoekopdracht per {n} queries.
+- Varieer de lengte: mix van korte trefwoorden (20-50 tekens), middellange \
+vragen (60-100 tekens) en langere queries (100-150 tekens).
+- Query's moeten realistisch zijn — alsof een jurist, privacyfunctionaris \
+(DPO), beleidsmaker of compliance officer ze zou stellen.
+- Verwijs NIET letterlijk naar artikelnummers in de query (de gebruiker kent \
+die nummers vaak niet).
+- Antwoord met een JSON-object met een "queries" veld.
+
+Voorbeeld output:
+{{"queries": ["uitzonderingen verwerking bijzondere persoonsgegevens", \
+"Hoe kan de Autoriteit persoonsgegevens handhavend optreden?", \
+"Een werkgever wil gezondheidsgegevens van werknemers bijhouden, \
+welke regels gelden volgens de Nederlandse privacywet?", \
+"Wat is de rol van de Autoriteit persoonsgegevens?", \
+"boetebevoegdheid AP UAVG", \
+"Wanneer mag een organisatie strafrechtelijke gegevens verwerken?"]}}
+"""
+
+USER_PROMPT_UAVG = """\
+Tekstfragment (bron: UAVG NL):
+---
+{chunk_text}
+---
+
+Metadata:
+- Type: {section_type}
+- Locatie: {hierarchy_path}
+
+Genereer {n} diverse zoekquery's waarvoor bovenstaand fragment het antwoord is.\
+"""
+
 DOCUMENTS: dict[str, QueryGenConfig] = {
     "eu_ai_act": QueryGenConfig(
         name="eu_ai_act",
@@ -166,6 +221,13 @@ DOCUMENTS: dict[str, QueryGenConfig] = {
         output_path=PROJECT_ROOT / "data" / "synthetic" / "gdpr_query_pairs.jsonl",
         system_prompt=SYSTEM_PROMPT_GDPR,
         user_prompt_template=USER_PROMPT_GDPR,
+    ),
+    "uavg": QueryGenConfig(
+        name="uavg",
+        chunks_path=PROJECT_ROOT / "data" / "chunks" / "uavg" / "chunks_without_context.jsonl",
+        output_path=PROJECT_ROOT / "data" / "synthetic" / "uavg_query_pairs.jsonl",
+        system_prompt=SYSTEM_PROMPT_UAVG,
+        user_prompt_template=USER_PROMPT_UAVG,
     ),
 }
 
@@ -338,8 +400,8 @@ if __name__ == "__main__":
     # CONFIG: Adjust these parameters for your use case
     # -----------------------------------------------------------------------
 
-    # Which document(s) to process: "eu_ai_act", "gdpr", or "all"
-    DOC = "all"
+    # Which document(s) to process: "eu_ai_act", "gdpr", "uavg", or "all"
+    DOC = "uavg"
 
     # --- LLM endpoint (OpenAI-compatible: Ollama, vLLM, Azure, etc.) ---
     # Set LLM_BASE_URL and LLM_MODEL in your .env file

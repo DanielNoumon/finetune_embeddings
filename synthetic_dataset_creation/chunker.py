@@ -1,8 +1,9 @@
 """
-Semantic hierarchical chunker for Dutch EU regulation PDFs.
+Semantic hierarchical chunker for Dutch regulation documents.
 
-Supports any regulation that follows the standard EU structure:
-  Recitals (Overwegingen) → Chapters (Hoofdstukken) → Articles (Artikelen) → Annexes (Bijlagen)
+Supports two document formats:
+  1. EU regulations (PDF): Recitals → Chapters → Articles → Annexes
+  2. Dutch national laws (txt): Preamble → Chapters → Articles
 
 Produces two JSONL outputs per document:
   - chunks_with_context.jsonl   (contextual header prepended to text)
@@ -15,6 +16,7 @@ Usage:
     DOC = "all"         # Chunk all configured documents
     DOC = "eu_ai_act"   # Chunk only the EU AI Act
     DOC = "gdpr"        # Chunk only the GDPR
+    DOC = "uavg"        # Chunk only the UAVG
 """
 
 from __future__ import annotations
@@ -42,15 +44,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 @dataclass
 class DocumentConfig:
-    """Configuration for chunking a specific EU regulation PDF."""
+    """Configuration for chunking a Dutch regulation document."""
     name: str                        # short key, e.g. "eu_ai_act", "gdpr"
     source_label: str                # used in chunk metadata, e.g. "eu_ai_act_NL"
     display_name: str                # used in context headers, e.g. "EU AI Act (NL)"
-    pdf_path: Path
+    source_path: Path
     output_dir: Path
+    doc_format: str = "eu_regulation"  # "eu_regulation" or "nl_wet"
     footer_patterns: list[re.Pattern] = field(default_factory=list)
     definitions_article: int = 3     # which article contains definitions
     has_annexes: bool = True
+    closing_marker: str = ""         # trim text after this (e.g. "Lasten en bevelen")
 
 
 # Pre-configured documents
@@ -59,7 +63,7 @@ DOCUMENTS: dict[str, DocumentConfig] = {
         name="eu_ai_act",
         source_label="eu_ai_act_NL",
         display_name="EU AI Act (NL)",
-        pdf_path=PROJECT_ROOT / "data" / "documents" / "eu_ai_act_NL.pdf",
+        source_path=PROJECT_ROOT / "data" / "documents" / "eu_ai_act_NL.pdf",
         output_dir=PROJECT_ROOT / "data" / "chunks" / "eu_ai_act",
         footer_patterns=[
             re.compile(r"PB L van \d{1,2}\.\d{1,2}\.\d{4}"),
@@ -74,7 +78,7 @@ DOCUMENTS: dict[str, DocumentConfig] = {
         name="gdpr",
         source_label="gdpr_NL",
         display_name="AVG (NL)",
-        pdf_path=PROJECT_ROOT / "data" / "documents" / "gdpr_NL.pdf",
+        source_path=PROJECT_ROOT / "data" / "documents" / "gdpr_NL.pdf",
         output_dir=PROJECT_ROOT / "data" / "chunks" / "gdpr",
         footer_patterns=[
             re.compile(r"Publicatieblad van de Europese Unie"),
@@ -84,6 +88,17 @@ DOCUMENTS: dict[str, DocumentConfig] = {
         ],
         definitions_article=4,
         has_annexes=False,
+    ),
+    "uavg": DocumentConfig(
+        name="uavg",
+        source_label="uavg_NL",
+        display_name="UAVG (NL)",
+        source_path=PROJECT_ROOT / "data" / "documents" / "UAVG.txt",
+        output_dir=PROJECT_ROOT / "data" / "chunks" / "uavg",
+        doc_format="nl_wet",
+        definitions_article=1,
+        has_annexes=False,
+        closing_marker="Lasten en bevelen",
     ),
 }
 
@@ -608,6 +623,238 @@ def _merge_small_chunks(chunks: list[Chunk]) -> list[Chunk]:
 
 
 # ---------------------------------------------------------------------------
+# NL wet (Dutch national law) parsing
+# ---------------------------------------------------------------------------
+
+# Regex patterns for Dutch national law (.txt) format
+RE_CHAPTER_NL = re.compile(
+    r"^Hoofdstuk\s+(\d+)\.\s+(.+)$", re.MULTILINE
+)
+RE_SECTION_NL = re.compile(
+    r"^Paragraaf\s+([\d.]+)\.\s+(.+)$", re.MULTILINE
+)
+RE_ARTICLE_NL = re.compile(
+    r"^Artikel\s+(\d+[a-z]?)\.\s+(.+)$", re.MULTILINE
+)
+RE_PARAGRAPH_NL = re.compile(r"^(\d+)\.\t", re.MULTILINE)
+
+
+def _extract_text(config: DocumentConfig) -> str:
+    """Extract text from source file (PDF or plain text)."""
+    path = config.source_path
+    print(f"Extracting text from {path.name} ...")
+    if path.suffix.lower() == ".pdf":
+        return extract_text(path, config.footer_patterns)
+    # Plain text file
+    text = path.read_text(encoding="utf-8")
+    for pat in config.footer_patterns:
+        text = pat.sub("", text)
+    if config.closing_marker:
+        idx = text.find(config.closing_marker)
+        if idx != -1:
+            text = text[:idx].strip()
+    return text
+
+
+def _find_preamble_end_nl(text: str) -> int:
+    """Return char index where the preamble ends (first Hoofdstuk)."""
+    m = RE_CHAPTER_NL.search(text)
+    return m.start() if m else 0
+
+
+def _chunk_nl_wet(
+    full_text: str, config: DocumentConfig,
+) -> list[Chunk]:
+    """Parse a Dutch national law: preamble → articles."""
+    preamble_end = _find_preamble_end_nl(full_text)
+    preamble_text = full_text[:preamble_end].strip()
+    articles_text = full_text[preamble_end:]
+
+    chunks: list[Chunk] = []
+
+    if (preamble_text
+            and _estimate_tokens(preamble_text) >= MIN_CHUNK_TOKENS):
+        print(f"Parsing preamble ({len(preamble_text):,} chars) ...")
+        pc = Chunk(
+            text=preamble_text,
+            source=config.source_label,
+            section_type="preambule",
+            hierarchy_path="Preambule",
+            context_header=(
+                f"{config.display_name} > Preambule:"
+            ),
+        )
+        if _estimate_tokens(preamble_text) > MAX_CHUNK_TOKENS:
+            chunks.extend(_split_long_text(pc, config))
+        else:
+            chunks.append(pc)
+
+    print(f"Parsing articles ({len(articles_text):,} chars) ...")
+    chunks.extend(
+        _parse_articles_nl_wet(articles_text, config)
+    )
+    return chunks
+
+
+def _parse_articles_nl_wet(
+    text: str, config: DocumentConfig,
+) -> list[Chunk]:
+    """Parse articles from a Dutch national law (.txt format)."""
+    chunks: list[Chunk] = []
+
+    current_chapter = ""
+    current_chapter_num = ""
+    current_section = ""
+
+    events: list[tuple[int, str, dict]] = []
+
+    for m in RE_CHAPTER_NL.finditer(text):
+        events.append((m.start(), "chapter", {
+            "num": m.group(1),
+            "title": m.group(2).strip(),
+        }))
+
+    for m in RE_SECTION_NL.finditer(text):
+        events.append((m.start(), "section", {
+            "label": f"Paragraaf {m.group(1)}",
+            "title": m.group(2).strip(),
+        }))
+
+    for m in RE_ARTICLE_NL.finditer(text):
+        events.append((m.start(), "article", {
+            "match": m,
+            "num_str": m.group(1),
+            "title": m.group(2).strip(),
+        }))
+
+    events.sort(key=lambda e: e[0])
+
+    for idx, (pos, etype, data) in enumerate(events):
+        if etype == "chapter":
+            current_chapter = (
+                f"Hoofdstuk {data['num']} — {data['title']}"
+            )
+            current_chapter_num = data["num"]
+            current_section = ""
+        elif etype == "section":
+            current_section = (
+                f"{data['label']} — {data['title']}"
+            )
+        elif etype == "article":
+            art_num_str = data["num_str"]
+            art_title = data["title"]
+            art_match = data["match"]
+            num_match = re.match(r"(\d+)", art_num_str)
+            assert num_match is not None
+            art_num_int = int(num_match.group(1))
+
+            # Determine article body boundaries
+            art_body_start = art_match.end()
+            art_body_end = len(text)
+            for npos, ntype, _ in events[idx + 1:]:
+                if ntype in ("article", "chapter"):
+                    art_body_end = npos
+                    break
+
+            art_body = text[art_body_start:art_body_end].strip()
+
+            hierarchy_parts = []
+            if current_chapter:
+                hierarchy_parts.append(current_chapter)
+            if current_section:
+                hierarchy_parts.append(current_section)
+            hierarchy_parts.append(
+                f"Artikel {art_num_str} — {art_title}"
+            )
+
+            para_chunks = _split_article_by_paras_nl(
+                art_body, art_num_int, art_title,
+                current_chapter, current_chapter_num,
+                current_section, hierarchy_parts, config,
+            )
+            chunks.extend(para_chunks)
+
+    return chunks
+
+
+def _split_article_by_paras_nl(
+    body: str,
+    art_num: int,
+    art_title: str,
+    chapter: str,
+    chapter_num: str,
+    section: str,
+    hierarchy_parts: list[str],
+    config: DocumentConfig,
+) -> list[Chunk]:
+    """Split a NL wet article body into paragraph-level chunks."""
+    para_matches = list(RE_PARAGRAPH_NL.finditer(body))
+
+    # If no paragraph markers or short enough, single chunk
+    if (len(para_matches) <= 1
+            or _estimate_tokens(body) <= MAX_CHUNK_TOKENS):
+        hierarchy = " > ".join(hierarchy_parts)
+        header = f"{config.display_name} > {hierarchy}:"
+        chunk = Chunk(
+            text=body,
+            source=config.source_label,
+            section_type="artikel",
+            chapter=chapter,
+            chapter_number=chapter_num,
+            section=section,
+            article_number=art_num,
+            article_title=art_title,
+            hierarchy_path=hierarchy,
+            context_header=header,
+        )
+        if _estimate_tokens(body) > MAX_CHUNK_TOKENS:
+            return _split_long_text(chunk, config)
+        return [chunk]
+
+    chunks: list[Chunk] = []
+    intro = body[:para_matches[0].start()].strip()
+
+    for i, pm in enumerate(para_matches):
+        para_num = int(pm.group(1))
+        start = pm.start()
+        end = (
+            para_matches[i + 1].start()
+            if i + 1 < len(para_matches) else len(body)
+        )
+        para_text = body[start:end].strip()
+
+        if i == 0 and intro:
+            para_text = intro + "\n\n" + para_text
+
+        hierarchy = (
+            " > ".join(hierarchy_parts)
+            + f" > Lid {para_num}"
+        )
+        header = f"{config.display_name} > {hierarchy}:"
+
+        chunk = Chunk(
+            text=para_text,
+            source=config.source_label,
+            section_type="artikel",
+            chapter=chapter,
+            chapter_number=chapter_num,
+            section=section,
+            article_number=art_num,
+            article_title=art_title,
+            paragraph_number=para_num,
+            hierarchy_path=hierarchy,
+            context_header=header,
+        )
+
+        if _estimate_tokens(para_text) > MAX_CHUNK_TOKENS:
+            chunks.extend(_split_long_text(chunk, config))
+        else:
+            chunks.append(chunk)
+
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
@@ -615,19 +862,44 @@ def chunk_document(config: DocumentConfig) -> list[Chunk]:
     """Full chunking pipeline. Returns list of Chunk objects."""
     print(f"\n{'='*60}")
     print(f"Chunking: {config.display_name}")
-    print(f"  PDF: {config.pdf_path.name}")
+    print(f"  Source: {config.source_path.name}")
     print(f"  Output: {config.output_dir}")
     print(f"{'='*60}")
 
-    print(f"Extracting text from {config.pdf_path.name} ...")
-    full_text = extract_text(config.pdf_path, config.footer_patterns)
+    full_text = _extract_text(config)
 
+    if config.doc_format == "nl_wet":
+        all_chunks = _chunk_nl_wet(full_text, config)
+    else:
+        all_chunks = _chunk_eu_regulation(full_text, config)
+
+    # Merge tiny chunks
+    all_chunks = _merge_small_chunks(all_chunks)
+
+    # Assign IDs and token estimates
+    for i, chunk in enumerate(all_chunks):
+        chunk.chunk_id = i
+        chunk.token_estimate = _estimate_tokens(chunk.text)
+
+    print(f"Total chunks: {len(all_chunks)}")
+    return all_chunks
+
+
+def _chunk_eu_regulation(
+    full_text: str, config: DocumentConfig,
+) -> list[Chunk]:
+    """Parse an EU regulation: recitals → articles → annexes."""
     recitals_end = _find_recitals_end(full_text)
-    annexes_start = _find_annexes_start(full_text) if config.has_annexes else len(full_text)
+    annexes_start = (
+        _find_annexes_start(full_text)
+        if config.has_annexes else len(full_text)
+    )
 
     recitals_text = full_text[:recitals_end]
     articles_text = full_text[recitals_end:annexes_start]
-    annexes_text = full_text[annexes_start:] if config.has_annexes else ""
+    annexes_text = (
+        full_text[annexes_start:] if config.has_annexes else ""
+    )
 
     print(f"Parsing recitals ({len(recitals_text):,} chars) ...")
     recital_chunks = _parse_recitals(recitals_text, config)
@@ -642,18 +914,7 @@ def chunk_document(config: DocumentConfig) -> list[Chunk]:
     else:
         print("No annexes to parse.")
 
-    all_chunks = recital_chunks + article_chunks + annex_chunks
-
-    # Merge tiny chunks
-    all_chunks = _merge_small_chunks(all_chunks)
-
-    # Assign IDs and token estimates
-    for i, chunk in enumerate(all_chunks):
-        chunk.chunk_id = i
-        chunk.token_estimate = _estimate_tokens(chunk.text)
-
-    print(f"Total chunks: {len(all_chunks)}")
-    return all_chunks
+    return recital_chunks + article_chunks + annex_chunks
 
 
 def save_chunks(chunks: list[Chunk], output_dir: Path) -> None:
@@ -726,7 +987,7 @@ if __name__ == "__main__":
     # CONFIG: Adjust these parameters for your use case
     # -----------------------------------------------------------------------
 
-    # Which document(s) to process: "eu_ai_act", "gdpr", or "all"
+    # Which document(s) to process: "eu_ai_act", "gdpr", "uavg", or "all"
     DOC = "all"
 
     # -----------------------------------------------------------------------
