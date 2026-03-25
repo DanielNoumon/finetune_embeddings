@@ -853,11 +853,10 @@ Times estimated from checkpoint directory timestamps (1-epoch gap between saved 
 
 ### Energy estimate
 
-Assuming ~500W average GPU draw during training + ~100W system overhead:
+RTX 5090 TDP is 575W; estimated ~500W average draw during training, ~100W for CPU/RAM/fans.
 
-- **GPU only**: 3.9h × 0.50 kW ≈ **1.95 kWh**
-- **Full system**: 3.9h × 0.60 kW ≈ **2.34 kWh**
-- **Conservative total** (incl. eval, mining, recovery): **~3 kWh**
+- **Training only (GPU+system)**: 3.9h × 0.60 kW ≈ **2.34 kWh**
+- **Conservative total** (incl. eval, hard negative mining, checkpoint recovery): **~3 kWh**
 
 ### Disk footprint of saved models
 
@@ -871,7 +870,7 @@ Assuming ~500W average GPU draw during training + ~100W system overhead:
 | qwen3_8b_stage2 | 15 GB |
 | **Total** | **~46 GB** |
 
-The 4B and 8B directories are small because only LoRA adapters are saved (not the full base model). The 0.6B directories contain full model weights.
+The 4B directories are small because only LoRA adapter weights are saved (~15M params). The 8B directories are large because the `final/` subdirectory contains the fully merged model (LoRA merged back into base weights → full 8B saved to disk for upload). The 0.6B was fine-tuned without LoRA, so full model weights are saved in every checkpoint.
 
 ---
 
