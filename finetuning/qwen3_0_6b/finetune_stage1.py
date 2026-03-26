@@ -236,7 +236,7 @@ if __name__ == "__main__":
     MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
     TRAIN_DIR = PROJECT_ROOT / "data" / "processed" / "train"
     EVAL_DIR = PROJECT_ROOT / "data" / "processed" / "eval"
-    OUTPUT_DIR = PROJECT_ROOT / "models" / "qwen3_stage1"
+    OUTPUT_DIR = PROJECT_ROOT / "models" / "qwen3_0_6b_stage1"
 
     # Qwen3 instruct prompt — English instructions recommended
     QUERY_PROMPT = (

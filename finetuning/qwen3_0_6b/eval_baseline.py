@@ -8,7 +8,7 @@ Tests:
   3. flash_attention_2 compatibility
 
 Run:
-  python finetuning/qwen3/eval_baseline.py
+  python finetuning/qwen3_0_6b/eval_baseline.py
 """
 
 import json

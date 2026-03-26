@@ -102,11 +102,11 @@ if __name__ == "__main__":
     PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
     MODEL_NAME = str(
-        PROJECT_ROOT / "models" / "qwen3_stage1" / "final"
+        PROJECT_ROOT / "models" / "qwen3_0_6b_stage1" / "final"
     )
     TRAIN_DIR = PROJECT_ROOT / "data" / "processed" / "train"
     OUTPUT_DIR = (
-        PROJECT_ROOT / "data" / "processed" / "qwen3_train_hard_neg"
+        PROJECT_ROOT / "data" / "processed" / "qwen3_0_6b_train_hard_neg"
     )
     N_NEGATIVES = 1
 

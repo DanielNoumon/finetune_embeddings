@@ -6,7 +6,7 @@ existing HF model repository.
 
 Usage:
     python upload_to_hf/upload_model.py \
-        --model-path models/qwen3_stage2/final \
+        --model-path models/qwen3_0_6b_stage2/final \
         --repo-id DanielNoumon/qwen3-embedding-0.6b-ai-act-nl \
         --model-card cards/model_cards/MODEL_CARD_QWEN3_0_6B.md
 """

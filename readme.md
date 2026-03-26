@@ -29,7 +29,7 @@ Fine-tunes multilingual embedding models for semantic search and retrieval on Du
 │   ├── e5_large_stage2/        # e5-large: Stage 2 (hard negatives)
 │   │   ├── mine_negatives.py
 │   │   └── finetune_stage2.py
-│   ├── qwen3/                  # Qwen3-Embedding-0.6B (full fine-tune)
+│   ├── qwen3_0_6b/             # Qwen3-Embedding-0.6B (full fine-tune)
 │   │   ├── eval_baseline.py    # Zero-shot evaluation
 │   │   ├── finetune_stage1.py
 │   │   └── finetune_stage2.py
@@ -79,10 +79,10 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python finetuning/e5_large_stag
 
 **Qwen3-Embedding-0.6B:**
 ```bash
-python finetuning/qwen3/eval_baseline.py
-python finetuning/qwen3/finetune_stage1.py
-python finetuning/qwen3/mine_negatives.py
-python finetuning/qwen3/finetune_stage2.py
+python finetuning/qwen3_0_6b/eval_baseline.py
+python finetuning/qwen3_0_6b/finetune_stage1.py
+python finetuning/qwen3_0_6b/mine_negatives.py
+python finetuning/qwen3_0_6b/finetune_stage2.py
 ```
 
 **Qwen3-Embedding-4B (LoRA):**
