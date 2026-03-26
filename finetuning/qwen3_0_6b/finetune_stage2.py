@@ -335,8 +335,8 @@ if __name__ == "__main__":
         metric_for_best_model=primary_metric,
         logging_steps=5,
         logging_first_step=True,
-        run_name="qwen3-0.6b-ai-act-nl-hard-neg",
-        report_to="tensorboard",
+        run_name="qwen3-0.6b-dutch-regulations-hard-neg",
+        report_to="wandb",
     )
 
     trainer = SentenceTransformerTrainer(

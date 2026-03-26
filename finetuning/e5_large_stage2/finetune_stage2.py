@@ -346,8 +346,8 @@ if __name__ == "__main__":
         metric_for_best_model=primary_metric,
         logging_steps=5,
         logging_first_step=True,
-        run_name="e5-large-ai-act-nl-hard-neg",
-        report_to="tensorboard",
+        run_name="e5-large-dutch-regulations-hard-neg",
+        report_to="wandb",
     )
 
     trainer = SentenceTransformerTrainer(
