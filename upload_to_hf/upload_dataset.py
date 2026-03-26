@@ -51,7 +51,7 @@ def upload_dataset(
     dataset.push_to_hub(
         repo_id=repo_id,
         private=private,
-        commit_message="Upload EU AI Act NL query-chunk pairs dataset"
+        commit_message="Upload combined EU AI Act + GDPR + UAVG query-chunk pairs"
     )
     
     print(f"\n✓ Dataset uploaded successfully!")
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     # Dataset card to upload as README.md
     DATASET_CARD = (
         PROJECT_ROOT / "cards" / "dataset_cards"
-        / "DATASET_CARD_eu_regulations_combined.md"
+        / "DATASET_CARD_dutch_regulatory_queries.md"
     )
 
     # Whether to make the dataset private
