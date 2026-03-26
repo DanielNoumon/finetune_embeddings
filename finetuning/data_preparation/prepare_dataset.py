@@ -167,7 +167,7 @@ if __name__ == "__main__":
     # -------------------------------------------------------------------
     PROJECT_ROOT  = Path(__file__).resolve().parent.parent.parent
 
-    REPO_ID       = "danielnoumon/eu-ai-act-nl-queries"
+    REPO_ID       = "danielnoumon/eu-regulations-nl-queries"
     TRAIN_DIR     = PROJECT_ROOT / "data" / "processed" / "train"
     EVAL_DIR      = PROJECT_ROOT / "data" / "processed" / "eval"
     EVAL_FRACTION = 0.15

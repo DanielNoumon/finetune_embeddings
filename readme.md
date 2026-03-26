@@ -22,6 +22,8 @@ Fine-tunes multilingual embedding models for semantic search and retrieval on Du
 ├── evaluation/
 │   └── eval_openai.py          # Benchmark vs text-embedding-3-large
 ├── finetuning/
+│   ├── data_preparation/       # Shared dataset preparation
+│   │   └── prepare_dataset.py  # Download from HF, chunk-level train/eval split
 │   ├── e5_large_stage1/        # e5-large: Stage 1 (MNRL)
 │   │   ├── finetune_stage1.py
 │   │   ├── diagnose.py         # Precision/attention diagnostics
@@ -66,9 +68,15 @@ Generates diverse Dutch queries per chunk using any OpenAI-compatible endpoint (
 ```bash
 uv run python synthetic_dataset_creation/prepare_hf_dataset.py
 ```
-Converts query pairs to HuggingFace Dataset format with train/eval splits.
+Converts query pairs to HuggingFace Dataset format for upload.
 
-### 4. Fine-tuning
+### 4. Train/Eval Split
+```bash
+python finetuning/data_preparation/prepare_dataset.py
+```
+Downloads the dataset from HuggingFace Hub and creates chunk-level train/eval splits (85/15). All queries for the same chunk stay in the same split to prevent data leakage. Output: `data/processed/train/` and `data/processed/eval/`.
+
+### 5. Fine-tuning
 
 **e5-large:**
 ```bash
@@ -92,7 +100,7 @@ python finetuning/qwen3_4b/mine_negatives.py
 python finetuning/qwen3_4b/finetune_stage2.py
 ```
 
-### 5. Upload to HuggingFace
+### 6. Upload to HuggingFace
 ```bash
 # Dataset
 uv run python upload_to_hf/upload_dataset.py --repo-id "username/dataset-name"

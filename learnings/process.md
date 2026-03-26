@@ -806,10 +806,17 @@ Where:
 
 `A × B` is a **low-rank approximation** of the weight update. With rank `r=16`, you're saying: "the meaningful change to this matrix lives in a 16-dimensional subspace." This is surprisingly effective for domain adaptation.
 
-**Key parameters:**
-- `r` (rank): how many dimensions to allocate. Higher = more capacity, more VRAM. r=16 is standard.
-- `alpha`: scaling factor. Usually set to `2r`. Controls how strongly the adapter weights affect the output.
-- `target_modules`: which weight matrices to adapt. We target `q_proj, k_proj, v_proj, o_proj` (all attention projections).
+**Key parameters and why we chose them:**
+
+| Param | Value | Why |
+|-------|-------|-----|
+| `r` (rank) | 16 | Standard starting point for domain adaptation tasks. r=8 risks underfitting; r=32+ would double trainable params with diminishing returns given ~2000 training pairs. We didn't tune this — r=16 is the most common default and worked well out of the box. |
+| `alpha` | 32 (2×r) | The effective scale of the adapter is `alpha / r = 2.0`. This 2×r convention comes from the original LoRA paper and balances adapter influence with training stability. |
+| `dropout` | 0.05 | Light regularization to prevent overfitting on ~2000 pairs. Heavy dropout (0.1+) would slow convergence. |
+| `target_modules` | q_proj, k_proj, v_proj, o_proj | All attention projections — these are the most impactful layers for embedding models. We skip MLP layers to keep trainable params low (~0.3% of total). |
+| `learning_rate` | 1e-4 (Stage 1), 1e-5 (Stage 2) | LoRA adapters need a higher LR than full fine-tuning (2e-5) because only a tiny fraction of params are updated. Stage 2 drops to 1e-5 to avoid forgetting Stage 1 gains. |
+
+**Same config for both 4B and 8B:** Both models use identical LoRA hyperparameters. The only difference is operational — mini_batch_size drops from 2→1 and eval_batch_size from 2→1 on 8B due to VRAM constraints.
 
 **Result for 4B Qwen3:** 11.8M trainable parameters out of 4,034M total — just **0.29%**. Optimizer states, gradients, and VRAM scale with this tiny fraction, making the 4B model fit comfortably on 32GB.
 
@@ -1105,7 +1112,7 @@ Qwen3-Embedding-8B is the largest model in the Qwen3-Embedding family (7.6B para
 
 ### Setup
 
-**LoRA configuration:** Same as 4B — rank 16, alpha 32, targeting q/k/v/o projections. This yields 15.3M trainable parameters (0.20% of 7.6B total).
+**LoRA configuration:** Same as 4B — rank 16, alpha 32, dropout 0.05, targeting q/k/v/o projections (see Step 11 for rationale on each parameter choice). This yields 15.3M trainable parameters (0.20% of 7.6B total). The rank-16 subspace is proportionally smaller on 8B than on 4B (0.20% vs 0.29%), but this is fine for domain adaptation — the task doesn't require large representational shifts from the base model.
 
 **VRAM constraints:** The 8B model pushes the RTX 5090 to its absolute limit:
 - `mini_batch_size=1` for both Stage 1 and Stage 2 (mini_batch=2 OOMs even with flash_attention_2)

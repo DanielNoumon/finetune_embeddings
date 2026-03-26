@@ -366,6 +366,20 @@ With LoRA (r=16, targeting q/k/v/o projections, 36 layers):
 | `dropout` | Regularization on adapter weights | 0.0–0.1 |
 | `target_modules` | Which weight matrices to adapt | `q_proj, k_proj, v_proj, o_proj` |
 
+**Why these specific values for our project:**
+
+| Param | Value | Rationale |
+|-------|-------|-----------|
+| `r=16` | 16 | Standard starting point for domain adaptation. r=8 risks underfitting (too few dimensions to capture the Dutch legal domain shift), r=32/64 doubles/quadruples trainable params with diminishing returns on ~2000 training pairs. r=16 is the most common default in LoRA literature and worked well without tuning. |
+| `alpha=32` | 2×r | Controls the effective learning rate of the adapter: `scale = alpha / r = 2.0`. Setting alpha=2r is the standard convention from the original LoRA paper — it means the adapter contribution is scaled by 2× relative to r=1. Higher alpha would make the adapter updates too aggressive; lower would require more epochs. |
+| `dropout=0.05` | 0.05 | Light regularization. With only ~2000 training pairs and 11–15M trainable params, some regularization helps prevent overfitting, but heavy dropout (0.1+) would slow convergence on our small dataset. |
+| `target_modules` | q,k,v,o_proj | Targets all four attention projection matrices. This is standard for embedding models where the attention mechanism is the primary driver of semantic understanding. Skipping MLP layers (gate_proj, up_proj, down_proj) keeps trainable params low while covering the most impactful weights. |
+
+**Same LoRA config for 4B and 8B:** Both models use identical LoRA hyperparameters (r=16, alpha=32, dropout=0.05, same targets). The only differences are operational — mini_batch_size and eval_batch_size are smaller on 8B due to VRAM constraints. The LoRA config didn't need per-model tuning because:
+1. Both are Qwen3-Embedding family (same architecture, just different layer counts)
+2. The rank-16 subspace is proportionally *smaller* on the 8B model (0.20% vs 0.29%), which is fine — domain adaptation doesn't need large updates
+3. Results validated this: 8B matched or beat 4B at every dimension without config changes
+
 **Trade-off vs full fine-tuning:** LoRA constrains the weight update to a low-rank subspace. For domain adaptation (our task), this is sufficient. For tasks requiring large representational shifts from the base model, full fine-tuning is stronger. On ~2000 training pairs, LoRA prevents overfitting by limiting the parameter space.
 
 ---
