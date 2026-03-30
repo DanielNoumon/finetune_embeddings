@@ -22,11 +22,22 @@ def mine_hard_negatives(
     query_prompt="",
     corpus_prompt="",
     n_negatives=1,
+    range_min=0,
+    margin=0.0,
+    max_score=1.0,
 ):
     """Mine hard negatives using the given model.
 
     For each (anchor, positive) pair, finds the top-N most similar
     but incorrect corpus chunks as hard negatives.
+
+    Args:
+        range_min: Skip the top-N most similar candidates (too
+            confusing, might be false negatives / true positives).
+        margin: Negative similarity must be at least this much lower
+            than the query-positive similarity.
+        max_score: Skip negatives with similarity above this
+            threshold (likely true positives).
 
     Returns:
         Dataset with columns: anchor, positive, negative_1, ..., N
@@ -58,33 +69,94 @@ def mine_hard_negatives(
     print("  Computing similarity matrix...")
     sim_matrix = np.dot(q_emb, c_emb.T)
 
-    print(f"  Mining top-{n_negatives} hard negatives per query...")
+    # Compute positive similarity for each query
+    pos_sims = np.array([
+        sim_matrix[i, gold_indices[i]] for i in range(len(anchors))
+    ])
+
+    print("\n  Filtering params:")
+    print(f"    range_min={range_min} (skip top-N most similar)")
+    print(f"    margin={margin} (neg sim < pos sim - margin)")
+    print(f"    max_score={max_score} (skip neg with sim > this)")
+    print("  Positive similarity stats:")
+    print(f"    mean={pos_sims.mean():.4f}, ")
+    print(f"    min={pos_sims.min():.4f}, ")
+    print(f"    max={pos_sims.max():.4f}")
+
+    print(f"\n  Mining top-{n_negatives} hard negatives per query...")
     neg_columns = {
         f"negative_{j+1}": [] for j in range(n_negatives)
     }
-    skipped = 0
+    skipped_match = 0
+    skipped_margin = 0
+    skipped_max_score = 0
+    skipped_range_min = 0
+    insufficient = 0
 
     for i in range(len(anchors)):
         sims = sim_matrix[i].copy()
         sims[gold_indices[i]] = -1.0
 
-        top_k_indices = np.argsort(sims)[-n_negatives:][::-1]
+        # Sort descending by similarity
+        ranked_indices = np.argsort(sims)[::-1]
 
-        for j, neg_idx in enumerate(top_k_indices):
+        collected = []
+        for rank, neg_idx in enumerate(ranked_indices):
+            if len(collected) >= n_negatives:
+                break
+
+            neg_sim = sims[neg_idx]
+
+            # Skip if in range_min (too similar, likely confusing)
+            if rank < range_min:
+                skipped_range_min += 1
+                continue
+
+            # Skip if above max_score
+            if neg_sim > max_score:
+                skipped_max_score += 1
+                continue
+
+            # Skip if within margin of positive similarity
+            if margin > 0 and neg_sim > (pos_sims[i] - margin):
+                skipped_margin += 1
+                continue
+
             neg_text = unique_positives[neg_idx]
             if neg_text == positives[i]:
-                skipped += 1
-                neg_text = ""
+                skipped_match += 1
+                continue
+
+            collected.append(neg_text)
+
+        # Pad with empty strings if not enough negatives found
+        if len(collected) < n_negatives:
+            insufficient += 1
+        while len(collected) < n_negatives:
+            collected.append("")
+
+        for j, neg_text in enumerate(collected):
             neg_columns[f"negative_{j+1}"].append(neg_text)
 
-    if skipped > 0:
-        print(f"  Warning: {skipped} negatives matched positive")
-
     total_neg = len(anchors) * n_negatives
-    print(
-        f"  Mined {total_neg} hard negatives "
-        f"({n_negatives} per query, {len(anchors)} queries)"
+    valid_neg = total_neg - sum(
+        1 for texts in neg_columns.values() for t in texts if t == ""
     )
+    print(f"  Mined {valid_neg}/{total_neg} valid hard negatives")
+    print(f"    ({n_negatives} per query, {len(anchors)} queries)")
+    if skipped_range_min > 0:
+        print(f"    Skipped {skipped_range_min} (range_min)")
+    if skipped_max_score > 0:
+        print(f"    Skipped {skipped_max_score} (max_score)")
+    if skipped_margin > 0:
+        print(f"    Skipped {skipped_margin} (margin)")
+    if skipped_match > 0:
+        print(f"    Skipped {skipped_match} (matched positive)")
+    if insufficient > 0:
+        print(
+            f"    Warning: {insufficient} queries had insufficient "
+            f"negatives after filtering"
+        )
 
     data = {
         "anchor": anchors,
@@ -108,7 +180,10 @@ if __name__ == "__main__":
     OUTPUT_DIR = (
         PROJECT_ROOT / "data" / "processed" / "qwen3_0_6b_train_hard_neg"
     )
-    N_NEGATIVES = 1
+    N_NEGATIVES = 5
+    RANGE_MIN = 5
+    MARGIN = 0.1
+    MAX_SCORE = 0.9
 
     # Qwen3 instruct prompt
     QUERY_PROMPT = (
@@ -168,6 +243,9 @@ if __name__ == "__main__":
         query_prompt=QUERY_PROMPT,
         corpus_prompt=CORPUS_PROMPT,
         n_negatives=N_NEGATIVES,
+        range_min=RANGE_MIN,
+        margin=MARGIN,
+        max_score=MAX_SCORE,
     )
 
     # -------------------------------------------------------------------
