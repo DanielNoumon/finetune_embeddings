@@ -37,35 +37,35 @@ Fine-tuned **Qwen3-Embedding-0.6B** for Dutch/English retrieval on regulatory do
   - **Stage 2**: CachedMNRL + Matryoshka with hard negatives mined from Stage 1 model
 - **Dataset**: 5,732 synthetic queries generated from EU AI Act, GDPR (AVG), and UAVG chunks (Dutch/English)
 - **Hardware**: NVIDIA RTX 5090 (32GB VRAM, Blackwell)
-- **Precision**: bf16 + SDPA
+- **Precision**: bf16 + flash_attention_2 (sdpa fallback)
 
 ## Performance
 
-Evaluated on 869 held-out queries across 80 chunks from all three regulatory documents. All metrics measured with cosine similarity.
+Evaluated on 858 held-out queries across 145 chunks from all three regulatory documents. All metrics measured with cosine similarity.
 
 ### NDCG@10 across Matryoshka dimensions
 
 | Dim | Zero-shot | Stage 1 | Stage 2 | Delta (ZS to S2) |
 |-----|-----------|---------|---------|-------------------|
-| 1024 | 0.4251 | 0.5427 | **0.5437** | +0.1186 |
-| 768 | 0.4273 | 0.5434 | **0.5481** | +0.1208 |
-| 512 | 0.4177 | 0.5440 | **0.5419** | +0.1242 |
-| 256 | 0.3747 | 0.5407 | **0.5408** | +0.1661 |
-| 128 | 0.3463 | 0.5315 | **0.5289** | +0.1826 |
-| 64 | 0.2899 | 0.5060 | **0.5037** | +0.2138 |
+| 1024 | 0.7317 | 0.9012 | **0.9036** | +0.1719 |
+| 768 | 0.7323 | 0.8972 | **0.9016** | +0.1693 |
+| 512 | 0.7180 | 0.8976 | **0.8995** | +0.1815 |
+| 256 | 0.6681 | 0.8812 | **0.8803** | +0.2122 |
+| 128 | 0.6293 | 0.8677 | **0.8693** | +0.2400 |
+| 64 | 0.5436 | 0.8305 | **0.8312** | +0.2876 |
 
 ### Full metrics at dim=1024
 
 | Metric | Zero-shot | Stage 2 | Delta |
 |--------|-----------|---------|-------|
-| NDCG@10 | 0.4251 | **0.5437** | +0.1186 |
-| MRR@10 | 0.3976 | **0.5256** | +0.1280 |
-| MAP@100 | 0.4117 | **0.5375** | +0.1258 |
-| Accuracy@1 | 0.3464 | **0.4925** | +0.1461 |
-| Accuracy@3 | 0.4269 | **0.5455** | +0.1186 |
-| Accuracy@5 | 0.4614 | **0.5627** | +0.1013 |
-| Accuracy@10 | 0.5132 | **0.6018** | +0.0886 |
-| Recall@10 | 0.5132 | **0.6018** | +0.0886 |
+| NDCG@10 | 0.7317 | **0.9036** | +0.1719 |
+| MRR@10 | 0.6856 | **0.8772** | +0.1916 |
+| MAP@100 | 0.6908 | **0.8781** | +0.1873 |
+| Accuracy@1 | 0.5839 | **0.8089** | +0.2250 |
+| Accuracy@3 | 0.7669 | **0.9417** | +0.1748 |
+| Accuracy@5 | 0.8170 | **0.9615** | +0.1445 |
+| Accuracy@10 | 0.8753 | **0.9837** | +0.1084 |
+| Recall@10 | 0.8753 | **0.9837** | +0.1084 |
 
 ## Usage
 
@@ -112,9 +112,9 @@ embeddings_256 = model.encode(queries)
 ```
 
 **Speed vs quality tradeoff**:
-- **dim=1024**: Best quality (NDCG@10 = 0.544)
-- **dim=256**: 75% faster, 99.5% of quality (NDCG@10 = 0.541)
-- **dim=64**: 94% faster, 92.6% of quality (NDCG@10 = 0.504)
+- **dim=1024**: Best quality (NDCG@10 = 0.9036)
+- **dim=256**: 75% faster, 97.4% of quality (NDCG@10 = 0.8803)
+- **dim=64**: 94% faster, 91.9% of quality (NDCG@10 = 0.8312)
 
 ### Important: Use instruct prompts
 
@@ -141,7 +141,7 @@ doc_emb = model.encode(["your document here"])
 - **Learning rate**: 2e-5
 - **Epochs**: 3
 - **Negatives**: 127 in-batch negatives per query (via GradCache)
-- **Precision**: bf16 + SDPA
+- **Precision**: bf16 + flash_attention_2 (sdpa fallback)
 
 ### Stage 2: Hard negatives
 
@@ -156,8 +156,8 @@ doc_emb = model.encode(["your document here"])
 
 - **Dataset**: [danielnoumon/eu-regulations-nl-queries](https://huggingface.co/datasets/danielnoumon/eu-regulations-nl-queries)
 - **Source documents**: EU AI Act (NL), GDPR/AVG (NL), UAVG (NL)
-- **Train**: 4,863 synthetic query-chunk pairs (455 unique chunks)
-- **Eval**: 869 queries across 80 chunks
+- **Train**: 4,874 synthetic query-chunk pairs (824 unique chunks)
+- **Eval**: 858 queries across 145 chunks
 - **Split strategy**: Chunk-level (no chunk appears in both train and eval)
 - **Query generation**: Qwen3-30B-MoE (local) with structured prompts
 
