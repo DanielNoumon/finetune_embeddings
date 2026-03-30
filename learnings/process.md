@@ -404,22 +404,41 @@ We use the **Stage 1 model itself** to mine hard negatives:
 2. Encode all training corpus chunks
 3. For each query, rank all chunks by cosine similarity
 4. Exclude the correct positive chunk
-5. Take the **top-1 most similar wrong chunk** as the hard negative
+5. **Apply filtering** (see below), then take the top-N most similar wrong chunks
 
 **Why mine from Stage 1 (not the base model)?**
 - Stage 1 has learned task-specific similarity — its mistakes are more informative
 - A passage that fools the *adapted* model is a genuinely confusing case
 - Base model negatives would be too easy for the already-fine-tuned model
 
-**Why only 1 hard negative per query?**
-- 1 is the standard and most effective for MNRL
-- MNRL still uses in-batch negatives alongside the explicit hard negative
-- With batch 16: each query sees 1 hard negative + 15 in-batch negatives = 16 total negatives
-- More hard negatives increase dataset size and training time without proportional benefit
+### Hard negative filtering
+
+Raw top-K mining can produce **false hard negatives** — chunks that are actually relevant to the query but aren't the annotated positive. This is especially common in legal text where multiple chunks may validly answer the same question.
+
+Inspired by the sentence-transformers `mine_hard_negatives` function, we added three filtering parameters:
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `range_min` | 5 | Skip the top-5 most similar candidates — they're likely too confusing or even valid positives |
+| `margin` | 0.1 | Negative similarity must be at least 0.1 lower than the query-positive similarity |
+| `max_score` | 0.9 | Skip any negative with similarity > 0.9 — likely a true positive |
+
+**How filtering works per query:**
+1. Sort all non-positive chunks by descending similarity
+2. Skip ranks 0–4 (range_min=5) — these are the most similar and potentially valid answers
+3. Skip any chunk with similarity > 0.9 (max_score)
+4. Skip any chunk where `neg_sim > pos_sim - 0.1` (margin)
+5. Collect the first N chunks that pass all filters
+
+This produces "Goldilocks" negatives — hard enough to be informative, but not so hard they're actually correct answers the model shouldn't learn to reject.
+
+**Why 5 hard negatives now works (where it previously regressed):**
+
+In Step 9 below, we found that 5 raw hard negatives caused a regression (0.9463 → 0.9398). With filtering, the top-5 most confusing candidates (likely false negatives or near-duplicates) are skipped, and the margin ensures we don't mine chunks that are nearly as similar as the positive. The result is 5 genuinely informative negatives rather than 5 potentially misleading ones.
 
 ### Output
 
-The mining script produces a new dataset with columns `(anchor, positive, negative)` — same row count as the Stage 1 training set (1,944 triplets).
+The mining script produces a new dataset with columns `(anchor, positive, negative_1, ..., negative_5)` — same row count as the Stage 1 training set (1,944 rows, 5 negatives each).
 
 ```bash
 # On Colab (uses Stage 1 model for encoding)
@@ -1228,3 +1247,198 @@ The 8B model loses less quality at lower dimensions, likely because the larger m
 ### Recommendation
 
 **Qwen3-4B is the sweet spot.** It delivers 98% of the 8B's quality at half the VRAM, 4× the training throughput (mini_batch=4 vs 1), and far fewer operational headaches. The 8B model is best for maximum-quality deployments where VRAM and training cost are not constraints.
+
+---
+
+## Appendix A — Hyperparameter Sweep Guide
+
+### Why sweep?
+
+All experiments above used a single hyperparameter configuration per model. In industry, running multiple experiments with different settings is standard practice — it's the only way to verify whether you're near the optimum or leaving performance on the table.
+
+Sweeping has diminishing returns: when your model is already at NDCG@10 = 0.94+, the expected gain is small (maybe +0.005–0.015). The ROI is highest when (a) your initial results are suboptimal, or (b) you're training on a new dataset/model for the first time.
+
+### Which parameters matter most?
+
+Ranked by expected impact on embedding fine-tuning quality:
+
+#### 1. Learning Rate — the single most impactful parameter
+
+Controls the magnitude of weight updates per step. Too high and the model diverges or overshoots; too low and the model barely changes from baseline. If you can only sweep one parameter, sweep this one.
+
+| Scenario | Typical range |
+|---|---|
+| Full fine-tuning (e.g. Qwen3-0.6B) | 1e-5 to 5e-5 |
+| LoRA (e.g. Qwen3-4B) | 5e-5 to 3e-4 |
+| Stage 2 (any) | 0.5× to 0.1× of Stage 1 LR |
+
+**Example sweep configs (full fine-tuning):**
+
+| Config | LR | Epochs | Warmup | Expected behaviour |
+|---|---|---|---|---|
+| Conservative | 1e-5 | 4 | 0.1 | Slower convergence, less risk of overfitting, may peak later |
+| Standard | 2e-5 | 3 | 0.1 | Our default — balanced convergence speed and stability |
+| Aggressive | 5e-5 | 2 | 0.15 | Fast convergence, risk of overshooting on small datasets |
+
+**Example sweep configs (LoRA):**
+
+| Config | LR | Epochs | Warmup | Expected behaviour |
+|---|---|---|---|---|
+| Conservative | 5e-5 | 4 | 0.1 | More stable with small datasets, slower improvement |
+| Standard | 1e-4 | 3 | 0.1 | Our default — good balance for r=16 adapters |
+| Aggressive | 3e-4 | 2 | 0.15 | Can work if dataset is large enough; risks adapter instability |
+
+#### 2. Number of Epochs
+
+More passes = more learning, but risk of overfitting. With ~2,000 samples, overfitting is a real risk past epoch 3. With larger datasets (10K+), 5 epochs is safe.
+
+| Epochs | When to use |
+|---|---|
+| 1–2 | Large dataset (>10K pairs), high LR, or Stage 2 with hard negatives |
+| 3 | Default — works well for most setups with ~2K pairs |
+| 4–5 | Low LR, large dataset, or if eval metrics haven't plateaued at epoch 3 |
+
+Monitor the eval metric each epoch. If it stops improving or drops, you've gone too far.
+
+#### 3. Batch Size (contrastive pool)
+
+For MNRL/CachedMNRL, this determines how many in-batch negatives each query sees. Our experiments showed 63 and 127 negatives produce similar pipeline totals after hard negatives, so sweeping batch size is lower priority than LR.
+
+| Batch size | In-batch negatives | Notes |
+|---|---|---|
+| 32 | 31 | Minimum viable — noticeable quality loss |
+| 64 | 63 | Good default for standard MNRL |
+| 128 | 127 | Our default for CachedMNRL — diminishing returns above this |
+| 256 | 255 | Only useful with very large datasets |
+
+#### 4. Temperature (CachedMNRL softmax)
+
+Controls the "sharpness" of the contrastive distribution. Default is 0.05 in sentence-transformers.
+
+| Value | Effect |
+|---|---|
+| 0.01–0.02 | Focuses on hardest negatives, sharper gradients — more aggressive |
+| 0.05 | Default — good starting point |
+| 0.1–0.2 | Softer distribution, more weight on easy negatives — more forgiving |
+
+Rarely the bottleneck, but worth trying 0.02 and 0.1 alongside the default in a broader sweep.
+
+#### 5. Weight Decay
+
+L2 regularisation that shrinks weights toward zero. Higher values (0.05–0.1) help on very small datasets; lower (0.001) when the model is prone to underfitting.
+
+| Value | When to use |
+|---|---|
+| 0.001 | Large datasets, large models, underfitting risk |
+| 0.01 | Default — works well for most cases |
+| 0.05–0.1 | Small datasets (<2K pairs), heavy overfitting |
+
+### Practical sweep strategy
+
+For a project like this (~2,000 training pairs, single GPU):
+
+**Minimal sweep (3 runs, ~1 hour on RTX 5090):**
+1. Run LR = {1e-5, 2e-5, 5e-5} with epochs=3
+2. Pick the LR with best eval NDCG@10
+3. Run the winner for 2 and 4 epochs to verify convergence timing
+
+**Full sweep (9–12 runs, ~3–4 hours):**
+1. LR ∈ {1e-5, 2e-5, 5e-5} × Epochs ∈ {2, 3, 4} = 9 combinations
+2. Add 1–2 runs varying temperature or weight decay for the best LR/epoch combo
+3. Use W&B (Weights & Biases) or TensorBoard to compare runs
+
+**When NOT to sweep:**
+- Model already at NDCG@10 > 0.95 on your eval set — you're near ceiling
+- Dataset is the bottleneck, not the hyperparameters — invest in more/better data instead
+- You're doing exploratory work and need directional results, not optimal ones
+
+### How each parameter affects the training dynamics
+
+```
+LR ↑  → faster convergence, but risk of overshoot / collapse
+LR ↓  → slower, safer, but may never reach the optimum in N epochs
+
+Epochs ↑  → more passes over data, better fit, but overfitting risk
+Epochs ↓  → underfitting if LR is low, but safer with high LR
+
+Batch ↑  → more in-batch negatives, stronger signal, smoother gradients
+Batch ↓  → fewer negatives, noisier gradients, but hard negatives compensate
+
+Temp ↓  → sharper loss landscape, focuses on hardest examples
+Temp ↑  → smoother loss, more uniform gradient from all negatives
+
+Weight decay ↑  → stronger regularisation, fights overfitting
+Weight decay ↓  → weaker regularisation, model has more freedom
+```
+
+The key interaction: **LR and epochs are inversely related**. A higher LR needs fewer epochs (the model converges faster but overshoots sooner). A lower LR needs more epochs (slower convergence, later peak). When sweeping, always vary them together.
+
+---
+
+## Appendix B — Potential Pipeline Improvements
+
+The following improvements have been identified from reviewing NVIDIA's [embedding fine-tuning recipe](https://huggingface.co/blog/nvidia/domain-specific-embedding-finetune) and our own experimental observations. Scripts for items 1 and 2 have been implemented in `synthetic_dataset_creation/`.
+
+### 1. Multi-hop query generation
+
+**Status:** Implemented — `synthetic_dataset_creation/generate_multihop_queries.py`
+
+**Problem:** All current synthetic queries are single-hop — each query maps to exactly one chunk. Real users often ask complex questions that span multiple articles or sections (e.g. *"Hoe beïnvloeden de transparantieverplichtingen de conformiteitsbeoordeling van hoog-risico AI-systemen?"*). The model never sees these during training and may fail to retrieve all relevant passages.
+
+**Approach:**
+1. Group related chunks (same chapter/different articles, adjacent chunks, same section type)
+2. Generate queries that require information from 2–3 chunks to answer
+3. "Unroll" each multi-hop query: a 2-hop query produces 2 training pairs `(query, chunk_1)` and `(query, chunk_2)`, teaching the model that both chunks are relevant
+
+**Expected impact:** Better retrieval for composite questions in production. Especially relevant for legal text where questions often span multiple articles or recitals.
+
+**Usage:**
+```bash
+python synthetic_dataset_creation/generate_multihop_queries.py
+```
+
+The output (`*_multihop_pairs.jsonl`) can be merged with the standard single-hop pairs before training. A reasonable mix is ~80% single-hop + ~20% multi-hop.
+
+### 2. Quality scoring and filtering for synthetic data
+
+**Status:** Implemented — `synthetic_dataset_creation/score_and_filter_queries.py`
+
+**Problem:** Not all LLM-generated (query, chunk) pairs are high quality. Some queries may be ambiguous, too generic, or point to the wrong chunk. Training on noisy pairs injects noise into the contrastive signal. With a small dataset (~2K pairs), even 5–10% bad pairs can matter.
+
+**Approach:**
+1. An LLM judge scores each pair on 4 dimensions: **relevance** (does the chunk answer the query?), **accuracy** (does the chunk contain the needed information?), **clarity** (is the query well-formed?), **specificity** (is this chunk uniquely the right answer?)
+2. Compute a weighted overall score: `0.35 × relevance + 0.25 × accuracy + 0.20 × clarity + 0.20 × specificity`
+3. Filter out pairs below a threshold (default: 7.0/10)
+
+**Expected impact:** Cleaner training signal. NVIDIA's recipe uses this approach and considers it essential for their pipeline. Removing the bottom ~10–20% of pairs should improve convergence and final metrics.
+
+**Usage:**
+```bash
+python synthetic_dataset_creation/score_and_filter_queries.py
+```
+
+Outputs three files: filtered pairs (for training), rejected pairs (for analysis), and the full scored dataset.
+
+### 3. Lower contrastive temperature (0.02)
+
+**Status:** Not yet tested — single parameter change
+
+**Problem:** We use the default CachedMNRL temperature of 0.05. NVIDIA's recipe uses 0.02, calling it "deliberately aggressive" — it produces a sharper probability distribution that focuses the model on the hardest negatives.
+
+**Why it could help:** With our improved filtered hard negatives (margin + range filtering), the negatives are higher quality. A lower temperature would amplify the gradient signal from these carefully selected negatives, potentially improving fine-grained discrimination between similar passages.
+
+**How to test:** In the Stage 2 fine-tuning script, change the loss function temperature:
+
+```python
+# Current (default)
+inner_loss = CachedMultipleNegativesRankingLoss(model, mini_batch_size=MINI_BATCH)
+
+# Experiment: lower temperature
+inner_loss = CachedMultipleNegativesRankingLoss(
+    model, mini_batch_size=MINI_BATCH, temperature=0.02
+)
+```
+
+**Risk:** Lower temperature makes training more sensitive to noise in hard negatives. Only try this *after* implementing quality filtering (item 2) to ensure the negatives are clean.
+
+**Expected impact:** Small but potentially meaningful — most useful in Stage 2 where hard negatives dominate the learning signal.
