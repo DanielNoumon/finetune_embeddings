@@ -112,8 +112,8 @@ if __name__ == "__main__":
 
     # Qwen3 instruct prompt
     QUERY_PROMPT = (
-        "Instruct: Given a question about EU AI regulation, "
-        "retrieve the most relevant passage\nQuery:"
+        "Instruct: Given a question about Dutch data protection "
+        "and AI regulation, retrieve the most relevant passage\nQuery:"
     )
     CORPUS_PROMPT = ""
 

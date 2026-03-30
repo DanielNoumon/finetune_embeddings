@@ -127,7 +127,7 @@ def build_evaluators(
                 queries=queries,
                 corpus=corpus,
                 relevant_docs=relevant_docs,
-                name=f"eu-ai-act-nl-dim{dim}",
+                name=f"dutch-regs-dim{dim}",
                 truncate_dim=dim,
                 query_prompt=query_prompt,
                 corpus_prompt=corpus_prompt,
@@ -136,7 +136,7 @@ def build_evaluators(
         )
     eval_suite = SequentialEvaluator(evaluators)
     primary_metric = (
-        f"eu-ai-act-nl-dim{matryoshka_dims[0]}_cosine_ndcg@10"
+        f"dutch-regs-dim{matryoshka_dims[0]}_cosine_ndcg@10"
     )
     return eval_suite, primary_metric
 
@@ -176,7 +176,7 @@ def print_summary(
     )
     print(f"{'-'*6}  {'-'*14}  {'-'*14}  {'-'*8}")
     for dim in matryoshka_dims:
-        key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
+        key = f"dutch-regs-dim{dim}_cosine_ndcg@10"
         base = base_results[key]
         final = final_results[key]
         delta = final - base
@@ -187,7 +187,7 @@ def print_summary(
     print(f"{'='*58}")
 
     full_dim = matryoshka_dims[0]
-    prefix = f"eu-ai-act-nl-dim{full_dim}_cosine_"
+    prefix = f"dutch-regs-dim{full_dim}_cosine_"
     detail_metrics = [
         ("NDCG@10", "ndcg@10"),
         ("MRR@10", "mrr@10"),
@@ -240,8 +240,8 @@ if __name__ == "__main__":
 
     # Qwen3 instruct prompt — English instructions recommended
     QUERY_PROMPT = (
-        "Instruct: Given a question about EU AI regulation, "
-        "retrieve the most relevant passage\nQuery:"
+        "Instruct: Given a question about Dutch data protection "
+        "and AI regulation, retrieve the most relevant passage\nQuery:"
     )
     CORPUS_PROMPT = ""
 
@@ -287,7 +287,7 @@ if __name__ == "__main__":
     print("\nEvaluating base model at all Matryoshka dims...")
     base_results = eval_suite(model)
     for dim in MATRYOSHKA_DIMS:
-        key = f"eu-ai-act-nl-dim{dim}_cosine_ndcg@10"
+        key = f"dutch-regs-dim{dim}_cosine_ndcg@10"
         print(f"  Base NDCG@10 (dim={dim}): {base_results[key]:.4f}")
 
     # -------------------------------------------------------------------

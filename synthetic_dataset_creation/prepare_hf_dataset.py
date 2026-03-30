@@ -22,12 +22,19 @@ DOCUMENT_SOURCES = {
 
 
 def load_query_pairs(jsonl_path: Path, document_name: str) -> list[dict]:
-    """Load query pairs from JSONL file, adding document_name to each pair."""
+    """Load query pairs from JSONL file, adding document_name to each pair.
+
+    chunk_ids are namespaced with a document prefix (derived from the
+    filename) so they stay globally unique after merging multiple documents.
+    Without this, EU AI Act chunk 5 and GDPR chunk 5 would collide.
+    """
+    doc_prefix = jsonl_path.stem.replace("_query_pairs", "")
     pairs = []
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line in f:
             pair = json.loads(line)
             pair["document_name"] = document_name
+            pair["chunk_id"] = f"{doc_prefix}_{pair['chunk_id']}"
             pairs.append(pair)
     return pairs
 
