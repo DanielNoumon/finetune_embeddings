@@ -51,7 +51,7 @@ if str(PROJECT_ROOT) not in sys.path:
 QUERIES_PER_CHUNK = {
     "eu_ai_act": 6,
     "gdpr": 6,
-    "uavg": 10,
+    "uavg": 6,
 }
 
 MULTIHOP_QUERIES_PER_GROUP = 2

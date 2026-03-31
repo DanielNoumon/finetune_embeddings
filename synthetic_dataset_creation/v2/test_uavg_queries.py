@@ -1,5 +1,5 @@
 """
-Quick test: generate 10 queries per chunk for 5 UAVG chunks.
+Quick test: generate 6 queries per chunk for 5 UAVG chunks.
 Inspect output to decide the right queries-per-chunk setting.
 
 Usage:
@@ -36,7 +36,7 @@ async def test():
     test_config = QueryGenConfig(
         name=orig.name,
         chunks_path=orig.chunks_path,
-        output_path=V2_OUTPUT_DIR / "test_uavg_10q_5chunks.jsonl",
+        output_path=V2_OUTPUT_DIR / "test_uavg_6q_5chunks.jsonl",
         system_prompt=orig.system_prompt,
         user_prompt_template=orig.user_prompt_template,
     )
@@ -46,7 +46,7 @@ async def test():
         base_url=base_url,
         model=model,
         api_key=api_key,
-        n_queries=10,
+        n_queries=6,
         max_chunks=5,
         max_concurrent=2,
     )
@@ -57,7 +57,7 @@ async def test():
         by_chunk.setdefault(p.chunk_id, []).append(p.anchor)
 
     print("\n" + "=" * 60)
-    print("RESULTS: 10 queries per chunk, 5 UAVG chunks")
+    print("RESULTS: 6 queries per chunk, 5 UAVG chunks")
     print("=" * 60)
 
     for chunk_id, queries in sorted(by_chunk.items()):
