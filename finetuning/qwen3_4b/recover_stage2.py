@@ -6,15 +6,14 @@ Run from project root:
   python finetuning/qwen3_4b/recover_stage2.py
 """
 
-import json
 import torch
 from pathlib import Path
+from peft import PeftModel
 from finetuning.qwen3_4b.finetune_stage2 import (
     detect_device,
     load_eval_data,
     load_stage1_model,
     build_evaluators,
-    select_and_save_best_checkpoint,
     print_summary,
 )
 
@@ -56,16 +55,28 @@ if __name__ == "__main__":
     del stage1_model
     torch.cuda.empty_cache()
 
-    # Evaluate checkpoint(s) and save best as final
-    print("\n--- Evaluating Stage 2 checkpoint(s) ---")
-    best_results = select_and_save_best_checkpoint(
-        output_dir=OUTPUT_DIR,
-        stage1_dir=STAGE1_DIR,
-        base_model_name=BASE_MODEL_NAME,
-        eval_suite=eval_suite,
-        primary_metric=primary_metric,
-        final_path=FINAL_DIR,
-    )
+    # Evaluate checkpoint-39 and save as final
+    print("\n--- Evaluating Stage 2 checkpoint-39 ---")
+    ckpt_dir = OUTPUT_DIR / "checkpoint-39"
+    
+    if not (ckpt_dir / "adapter_config.json").exists():
+        raise RuntimeError(f"No adapter_config.json in {ckpt_dir}")
+    
+    # Load Stage 1, apply checkpoint-39 adapter, evaluate
+    ckpt_model = load_stage1_model(STAGE1_DIR, BASE_MODEL_NAME)
+    inner = ckpt_model[0].auto_model
+    peft_model = PeftModel.from_pretrained(inner, str(ckpt_dir))
+    ckpt_model[0].auto_model = peft_model
+    
+    best_results = eval_suite(ckpt_model)
+    score = best_results[primary_metric]
+    print(f"  {primary_metric}: {score:.4f}")
+    
+    # Merge and save
+    merged = peft_model.merge_and_unload()
+    ckpt_model[0].auto_model = merged
+    ckpt_model.save_pretrained(str(FINAL_DIR))
+    print(f"\nMerged model saved to {FINAL_DIR}")
 
     # Print comparison
     print_summary(base_results, best_results, MATRYOSHKA_DIMS)
