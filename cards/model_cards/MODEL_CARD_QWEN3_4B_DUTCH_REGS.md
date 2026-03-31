@@ -1,3 +1,45 @@
+---
+language:
+- nl
+- en
+license: apache-2.0
+library_name: sentence-transformers
+tags:
+- sentence-transformers
+- sentence-similarity
+- feature-extraction
+- mteb
+- embeddings
+- legal
+- dutch
+- regulations
+- lora
+- matryoshka
+base_model: Qwen/Qwen3-Embedding-4B
+model-index:
+- name: Qwen3-Embedding-4B Dutch Regulations
+  results:
+  - task:
+      type: information-retrieval
+      name: Information Retrieval
+    dataset:
+      name: Dutch Regulations Eval
+      type: custom
+    metrics:
+    - type: ndcg_at_10
+      value: 0.9325
+      name: NDCG@10
+    - type: mrr_at_10
+      value: 0.9111
+      name: MRR@10
+    - type: map_at_100
+      value: 0.9113
+      name: MAP@100
+    - type: recall_at_10
+      value: 0.9965
+      name: Recall@10
+---
+
 # Qwen3-Embedding-4B Dutch Regulations (LoRA Fine-tuned)
 
 Fine-tuned [Qwen/Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) on Dutch regulatory documents (EU AI Act, GDPR, UAVG) using LoRA + Matryoshka Representation Learning.
