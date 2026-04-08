@@ -75,8 +75,6 @@ Before fine-tuning anything, I measured how well existing models handle the task
 
 The proprietary model and the open-source e5-large start at virtually the same level on this task (0.8635 vs 0.8612). OpenAI has no inherent advantage on Dutch legal text — its strength is breadth across languages and domains, not depth on any specific one. The Qwen3 family scales predictably: 0.6B → 4B → 8B yields steady gains, but none break 0.90 without fine-tuning.
 
-> **Figure 2:** *Zero-shot NDCG@10 across all models. The dashed line marks 0.86 — the proprietary baseline that fine-tuning must beat.*
-
 ---
 
 ## Evaluation Methodology
@@ -108,7 +106,13 @@ I used a two-stage approach that's become standard in embedding fine-tuning:
 
 **Multiple Negatives Ranking Loss (MNRL)** treats every other passage in the batch as a negative example. With batch size 64, each query gets 63 negatives "for free". The model learns: "given this query, the correct passage should be more similar than all 63 other passages in this batch."
 
+> ![Figure: In-batch negatives]()
+> *Conceptual diagram: how MNRL constructs the N×N similarity matrix from a single batch. Each query is compared against every passage in the batch — the diagonal contains positive pairs, everything else is a negative. Source: sentence-transformers documentation or similar.*
+
 I wrapped MNRL in **MatryoshkaLoss**, which trains the model to produce useful embeddings at multiple truncated dimensionalities (1024, 768, 512, 256, 128, 64) simultaneously. This means you can use 1024-dim for maximum accuracy or 128-dim for 8× faster search — no retraining needed.
+
+> ![Figure: Matryoshka embeddings]()
+> *Conceptual diagram: Matryoshka Representation Learning. Like Russian nesting dolls, each prefix of the embedding vector is trained to be independently useful. Truncating from 1024 to 256 dims discards the outer layers but preserves the core information. Source: original MRL paper (Kusupati et al., 2022) or Hugging Face blog.*
 
 ### Stage 2: Hard Negative Mining
 
@@ -122,7 +126,13 @@ I used the Stage 1 model to mine hard negatives:
 
 The key insight: mining from the *adapted* model (not the base) produces more informative negatives. A passage that fools the already-fine-tuned model is a genuinely confusing case.
 
+> ![Figure: Hard negatives in embedding space]()
+> *Conceptual diagram: embedding space showing a query, its positive passage (close), easy negatives (far away), and hard negatives (close but wrong). Hard negatives force the model to learn fine-grained distinctions. Source: SBERT or ANCE paper illustrations.*
+
 Stage 2 then continues training from the Stage 1 checkpoint with these hard negatives added to the dataset. A lower learning rate (typically half of Stage 1) prevents catastrophic forgetting.
+
+![Training loss across all runs: Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 and Stage 2](figures/all_runs_train_loss.png)
+*W&B training loss across all runs. The 0.6B models (blue/green) start with higher contrastive loss (~14) and drop steeply — the smaller model has to work harder. The 4B LoRA models (orange/pink) start lower (~7–9) thanks to stronger pretrained representations. All runs converge to ~2 by the end of training.*
 
 ---
 
@@ -141,6 +151,9 @@ A decoder-based embedding model from Alibaba, built on Qwen3. Uses last-token po
 ### Qwen3-Embedding-4B (4B, decoder, LoRA)
 
 The 4B variant — too large for full fine-tuning on my 32GB GPU. I used **LoRA (Low-Rank Adaptation)**, which freezes the base weights and trains only small adapter matrices. With rank 16 targeting attention projections, I trained just 11.8M parameters (0.29% of the total) — yet this was enough to outperform every other model.
+
+> ![Figure: LoRA decomposition]()
+> *Conceptual diagram: LoRA inserts two small matrices A and B alongside the frozen weight matrix W. The update is W + A×B, where A and B have low rank r (e.g. 16). Only A and B are trained — the original weights are untouched. Source: original LoRA paper (Hu et al., 2021).*
 
 ### Qwen3-Embedding-8B (8B, decoder, LoRA)
 
@@ -167,6 +180,9 @@ The e5-large appears twice because the batch-8 RTX pipeline (fewer in-batch nega
 
 Fine-tuning adds 8–15 points of NDCG@10 across every model tested. The 4B LoRA model — training just 0.29% of its parameters on 1,944 synthetic pairs — beats OpenAI's best embedding API by over 10 points. The 8B model matches the 4B at dim=1024 but offers marginal gains at lower dimensions — the 4B is the sweet spot given the 2× VRAM cost of 8B.
 
+![NDCG@10 at dim=1024 over training steps for Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 (MNRL) and Stage 2 (hard negatives)](figures/qwen3_4b_06b_dutch_regs_ndcg_dim1024.png)
+*W&B training curves: NDCG@10 at dim=1024 on the 3-document eval set. The 4B LoRA model (pink/orange) starts higher and stays above the 0.6B (green/purple) throughout. Stage 2 hard negatives (dots) provide a consistent bump over Stage 1 MNRL (lines).*
+
 ### Matryoshka: Quality at Every Size
 
 One of the most practically useful results. MatryoshkaLoss flattened the quality-vs-size curve dramatically:
@@ -181,7 +197,8 @@ One of the most practically useful results. MatryoshkaLoss flattened the quality
 
 Before fine-tuning, dim=64 retained only 70% of dim=1024's quality. After: **95.7%**. This means you can use 64-dimensional embeddings (16× less storage, 16× faster search) with barely any quality loss. For production RAG, this is transformative.
 
-> **Figure 1:** *Matryoshka dimension vs NDCG@10 for multilingual-e5-large before and after fine-tuning. The curve flattens dramatically after fine-tuning — dim=64 retains 96% of full-dim quality.*
+![NDCG@10 at dim=128 over training steps for Qwen3-4B LoRA and Qwen3-0.6B](figures/qwen3_4b_06b_dutch_regs_ndcg_dim128.png)
+*W&B training curves at dim=128: even at 8× reduced dimensionality, the 4B LoRA model (pink) reaches 0.895 — within 4% of its full dim=1024 score. MatryoshkaLoss ensures quality is preserved at every truncation point.*
 
 ### vs. Proprietary SOTA
 
@@ -195,8 +212,6 @@ OpenAI's `text-embedding-3-large` also supports Matryoshka dimensions. Here's th
 | 128 | 0.7598 | **0.9188** | +0.1590 |
 
 The gap *widens* at lower dimensions. OpenAI's Matryoshka degradation is much steeper (12% relative decline from full to 128-dim vs. only 4.5% for my fine-tuned model). Domain-specific fine-tuning with MatryoshkaLoss teaches the model to be useful at every dimensionality.
-
-> **Figure 8:** *NDCG@10 at multiple Matryoshka dimensions for OpenAI text-embedding-3-large vs Qwen3-4B LoRA. The gap widens at lower dimensions because domain-specific fine-tuning teaches useful representations at every truncation point.*
 
 ---
 
@@ -215,8 +230,6 @@ I ran the same pipeline with different batch sizes (which controls in-batch nega
 The weaker Stage 1 is (fewer in-batch negatives), the more Stage 2 gains from hard negatives. The pipeline totals converge to nearly the same quality regardless of Stage 1 batch size. Hard negatives fill in exactly what in-batch negatives missed.
 
 **Practical implication:** Don't obsess over achieving maximum batch size in Stage 1. If you're VRAM-constrained, a smaller batch with hard negatives in Stage 2 gets you to the same place.
-
-> **Figure 3:** *Stage 2 NDCG@10 gain vs number of in-batch negatives in Stage 1. The weaker Stage 1 is, the more Stage 2 compensates — pipeline totals converge.*
 
 ### 2. More hard negatives can hurt
 
@@ -252,8 +265,6 @@ The 4B model, training just 11.8M out of 4,034M parameters, outperformed the ful
 
 A fine-tuned 0.6B model beats a zero-shot 8B model (13× larger). On my cross-domain benchmark (912 chunks across two legal documents), fine-tuning on ~2,000 synthetic pairs is worth more than a 13× parameter increase. Combining scale with fine-tuning gives the best result, but the marginal return on scale diminishes sharply: 0.6B → 4B gains +4.8 pts, but 4B → 8B adds only +1.5 pts.
 
-> **Figure 4:** *Model scale vs NDCG@10 on the cross-domain benchmark. Dashed lines = zero-shot; solid lines = fine-tuned. The fine-tuning lift dwarfs the scaling lift at every size.*
-
 ### 5. Fine-tuning on one legal domain transfers to another
 
 I evaluated all EU AI Act-trained models on the Dutch GDPR — a completely unseen document. The result: **roughly 50% of the training-domain improvement carried over**, consistently across four model scales:
@@ -266,8 +277,6 @@ I evaluated all EU AI Act-trained models on the Dutch GDPR — a completely unse
 | Qwen3-8B | +13.8 pts | +7.1 pts | 51% |
 
 The models don't just memorise EU AI Act content — they learn transferable Dutch legal retrieval patterns: legal vocabulary, regulatory sentence structure, query-passage matching conventions.
-
-> **Figure 5:** *Per-document NDCG@10 on the 912-chunk cross-domain benchmark, grouped by model. Hatched bars = GDPR (unseen domain). The transfer ratio is remarkably consistent at ~50%.*
 
 ### 6. Small eval corpora lie
 
@@ -292,6 +301,9 @@ My first model (multilingual-e5-large) immediately collapsed when trained in bf1
 
 **Why it happens:** bf16 has only 7 bits of mantissa precision (~2 decimal digits). During the backward pass through 24 transformer layers, rounding errors compound. On Blackwell's floating-point units specifically, this compounding is severe enough to turn gradients into noise. The optimizer then makes random weight updates, collapsing the embedding space.
 
+> ![Figure: fp32 vs bf16 precision]()
+> *Conceptual diagram: floating-point format comparison. fp32 has 23 mantissa bits (~7 decimal digits); bf16 has only 7 mantissa bits (~2 decimal digits). The mantissa determines precision — fewer bits means more rounding error per operation, which compounds through 24 transformer layers. Source: Google Brain bfloat16 documentation or similar.*
+
 **The fix:** fp32 + eager attention. This costs 2× VRAM (limiting batch size to 8) but is fully stable.
 
 **The twist:** When I switched to Qwen3-Embedding, bf16 worked perfectly. Qwen3's `RMSNorm` upcasts inputs to fp32 internally before normalization, keeping the critical operations precise even in bf16. This architectural detail — invisible to the user — is the difference between training stability and catastrophic failure.
@@ -307,7 +319,8 @@ It wasn't. As described above, hard negatives compensated. The batch-8 pipeline 
 
 The trade-off: ~20% slower (every sample is embedded twice). But it allowed me to run proper large-batch experiments on the RTX 5090, confirming the diminishing-returns finding.
 
-> **Figure 6:** *Training loss curves for e5-large Stage 1 (batch 8 vs batch 64 vs batch 128). Larger batches converge faster in Stage 1, but pipeline totals converge after Stage 2.*
+> ![Figure: GradCache mechanism]()
+> *Conceptual diagram: GradCache’s 3-step process. (1) Embed all N samples in small mini-batches without gradients. (2) Compute the full N×N similarity matrix and loss. (3) Re-embed in small mini-batches with gradients, using cached signals from step 2. This decouples contrastive pool size from VRAM. Source: GradCache paper (Gao et al., 2021) or sentence-transformers docs.*
 
 ### The PEFT Checkpoint Bug
 
@@ -383,8 +396,6 @@ Further improvements I'm exploring:
 | Qwen3-Embedding-0.6B (fine-tuned) | 620M | **0.9467** | +0.0832 |
 | Qwen3-Embedding-8B LoRA (fine-tuned) | 8B | **0.9625** | +0.0990 |
 | **Qwen3-Embedding-4B LoRA (fine-tuned)** | **4B** | **0.9658** | **+0.1023** |
-
-> **Figure 7:** *Final scoreboard — NDCG@10 at dim=1024 for all models. The green region marks the fine-tuned models; the red dashed line marks the proprietary baseline.*
 
 A few hours of training on synthetic data, a single GPU, and €0.75 in electricity. The models are local, private, free at inference, and far better at the task than the best proprietary embedding API.
 
