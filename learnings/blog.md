@@ -17,20 +17,20 @@ This post documents my experiments fine-tuning open-source embedding models on t
 ### Table of Contents
 
 1. [The Document](#the-document)
-2. [Structural Chunking](#step-1-structural-chunking)
-3. [Synthetic Training Data](#step-2-synthetic-training-data)
-4. [Baselines: How Good Is Zero-Shot?](#baselines-how-good-is-zero-shot)
-5. [Evaluation Methodology](#evaluation-methodology)
-6. [The Training Pipeline](#step-3-the-training-pipeline)
+2. [Structural Chunking](#structural-chunking)
+3. [Synthetic Training Data](#synthetic-training-data)
+4. [Evaluation Methodology](#evaluation-methodology)
+5. [Baselines: How Good Is Zero-Shot?](#baselines-how-good-is-zero-shot)
+6. [The Training Pipeline](#the-training-pipeline)
 7. [The Models](#the-models)
 8. [Results: The EU AI Act Benchmark](#results-the-eu-ai-act-benchmark)
 9. [The Surprising Findings](#the-surprising-findings)
 10. [Cross-Domain Evaluation](#cross-domain-evaluation-does-it-generalise)
 11. [Hardware: Training on an RTX 5090](#hardware-training-on-an-rtx-5090)
-12. [What I'd Do Differently](#what-id-do-differently)
-13. [The Recipe](#the-recipe)
+12. [Final Scoreboard](#final-scoreboard)
+13. [What I'd Do Differently](#what-id-do-differently)
 14. [Next Steps](#next-steps)
-15. [Final Scoreboard](#final-scoreboard)
+15. [The Recipe](#the-recipe)
 
 ---
 
@@ -48,7 +48,7 @@ It's a challenging retrieval target: dense legal language, extensive cross-refer
 
 ---
 
-## Step 1: Structural Chunking
+## Structural Chunking
 
 The first decision was how to split the document into retrievable chunks. The naive approach (fixed-size splitting at 512 tokens) would cut articles mid-sentence and lose legal context. But legal documents have an inherently well-defined hierarchy. Articles, paragraphs, and sub-items are atomic semantic units designed by legislators. A structural chunker respects these boundaries.
 
@@ -64,7 +64,7 @@ I also produced a context-enriched variant where each chunk gets a hierarchy pre
 
 ---
 
-## Step 2: Synthetic Training Data
+## Synthetic Training Data
 
 I needed `(query, relevant_chunk)` pairs to train the embedding model. Real user queries don't exist yet, so I generated them with an LLM.
 
@@ -76,22 +76,6 @@ The result: **2,284 query-chunk pairs** from 571 unique chunks. I split by chunk
 |---|---|---|
 | Train | 1,944 | 486 (85%) |
 | Eval | 340 | 85 (15%) |
-
----
-
-## Baselines: How Good Is Zero-Shot?
-
-Before fine-tuning anything, I measured how well existing models handle the task out of the box. This establishes the bar that fine-tuning needs to clear.
-
-| Model | NDCG@10 (dim=1024) | Notes |
-|---|---|---|
-| multilingual-e5-large | 0.8612 | Open-source encoder, 560M params |
-| Qwen3-Embedding-0.6B | 0.8013 | Open-source decoder, 620M params |
-| Qwen3-Embedding-4B | ~0.88 | Open-source decoder, 4B params |
-| Qwen3-Embedding-8B | 0.8836 | Open-source decoder, 8B params |
-| OpenAI text-embedding-3-large | 0.8635 | Proprietary, via Azure API |
-
-The proprietary model and the open-source e5-large start at virtually the same level on this task (0.8635 vs 0.8612). OpenAI has no inherent advantage on Dutch legal text; its strength is breadth across languages and domains, not depth on any specific one. The Qwen3 family scales predictably: 0.6B → 4B → 8B yields steady gains, but none break 0.90 without fine-tuning.
 
 ---
 
@@ -122,7 +106,23 @@ This evaluator runs after each training epoch, and the best checkpoint (by NDCG@
 
 ---
 
-## Step 3: The Training Pipeline
+## Baselines: How Good Is Zero-Shot?
+
+Before fine-tuning anything, I measured how well existing models handle the task out of the box. This establishes the bar that fine-tuning needs to clear.
+
+| Model | NDCG@10 (dim=1024) | Notes |
+|---|---|---|
+| multilingual-e5-large | 0.8612 | Open-source encoder, 560M params |
+| Qwen3-Embedding-0.6B | 0.8013 | Open-source decoder, 620M params |
+| Qwen3-Embedding-4B | ~0.88 | Open-source decoder, 4B params |
+| Qwen3-Embedding-8B | 0.8836 | Open-source decoder, 8B params |
+| OpenAI text-embedding-3-large | 0.8635 | Proprietary, via Azure API |
+
+The proprietary model and the open-source e5-large start at virtually the same level on this task (0.8635 vs 0.8612). OpenAI has no inherent advantage on Dutch legal text; its strength is breadth across languages and domains, not depth on any specific one. The Qwen3 family scales predictably: 0.6B → 4B → 8B yields steady gains, but none break 0.90 without fine-tuning.
+
+---
+
+## The Training Pipeline
 
 I used a two-stage approach that's become standard in embedding fine-tuning:
 
@@ -330,6 +330,23 @@ Another 8B-specific gotcha: evaluating a model loaded as `base + PeftModel.from_
 
 ---
 
+## Final Scoreboard
+
+| Model | Params | NDCG@10 | vs. OpenAI |
+|---|---|---|---|
+| OpenAI text-embedding-3-large | Unknown | 0.8635 | — |
+| multilingual-e5-large (zero-shot) | 560M | 0.8612 | -0.0023 |
+| multilingual-e5-large (fine-tuned) | 560M | **0.9492** | +0.0857 |
+| Qwen3-Embedding-0.6B (fine-tuned) | 620M | **0.9467** | +0.0832 |
+| Qwen3-Embedding-8B LoRA (fine-tuned) | 8B | **0.9625** | +0.0990 |
+| **Qwen3-Embedding-4B LoRA (fine-tuned)** | **4B** | **0.9658** | **+0.1023** |
+
+A few hours of training on synthetic data, a single GPU, and €0.75 in electricity. The models are local, private, free at inference, and far better at the task than the best proprietary embedding API.
+
+Domain-specific fine-tuning isn't optional for serious RAG. It's the single highest-leverage investment you can make.
+
+---
+
 ## What I'd Do Differently
 
 1. **Sweep hyperparameters from the start.** I used a single LR/epochs config per model. A minimal sweep (3 learning rates × 3 epoch counts = 9 runs, ~3 hours) would have either confirmed I'm near-optimal or found a better configuration. The expected gain is small when you're already at 0.94+, but the confidence is worth the compute.
@@ -339,6 +356,22 @@ Another 8B-specific gotcha: evaluating a model loaded as `base + PeftModel.from_
 3. **Start with CachedMNRL.** The standard MNRL → GradCache migration taught me a lot, but if I were doing it again, I'd start with CachedMNRL and skip the batch-size constraints entirely.
 
 4. **Evaluate on a larger corpus sooner.** My initial eval set had only 85 chunks, which inflated scores and masked real retrieval difficulty. The moment I expanded to 912 chunks, NDCG@10 dropped from 0.95+ to 0.76 for the same model. Larger eval corpora give more honest (and more useful) signal.
+
+---
+
+## Next Steps
+
+The results above were all trained on a single document (EU AI Act). The natural next step is **multi-document fine-tuning**, training on EU AI Act + GDPR + UAVG (Dutch implementation law) jointly. Early results with Qwen3-0.6B on this combined corpus show NDCG@10 = 0.9036 on a 145-chunk, 858-query eval set, with strong performance across three diverse legal documents from a single model.
+
+Further improvements I'm exploring:
+
+1. **Cross-document multi-hop queries**: generating synthetic queries that require information from multiple documents (e.g. "How does the UAVG implement the GDPR's requirements for data protection officers?"). These teach the model to retrieve across document boundaries, which is critical for production RAG over heterogeneous corpora.
+
+2. **Quality scoring and filtering**: using an LLM judge to score each synthetic (query, chunk) pair on relevance, accuracy, clarity, and specificity, then filtering out low-quality pairs before training. With only ~2,000 pairs, even 5–10% noise matters.
+
+3. **Lower contrastive temperature**: NVIDIA's embedding fine-tuning recipe uses temperature 0.02 (vs. the default 0.05). This sharpens the loss landscape and focuses the model on the hardest negatives. Worth testing now that hard negative filtering is in place.
+
+4. **Hyperparameter sweeps**: confirming that the single LR/epoch configuration used throughout is actually near-optimal. A minimal sweep (3 LRs × 3 epoch counts = 9 runs, ~3 hours) would provide this confidence.
 
 ---
 
@@ -361,39 +394,6 @@ For anyone looking to replicate this on their own domain:
 7. **Evaluate on a realistic corpus.** At least hundreds of chunks, preferably from multiple documents. Small eval sets lie.
 
 Total wall-clock time for the full pipeline (chunking → synthetic data → Stage 1 → mining → Stage 2 → evaluation): **under 2 hours** on a single GPU for a 0.6B model, ~3 hours for 4B with LoRA.
-
----
-
-## Next Steps
-
-The results above were all trained on a single document (EU AI Act). The natural next step is **multi-document fine-tuning**, training on EU AI Act + GDPR + UAVG (Dutch implementation law) jointly. Early results with Qwen3-0.6B on this combined corpus show NDCG@10 = 0.9036 on a 145-chunk, 858-query eval set, with strong performance across three diverse legal documents from a single model.
-
-Further improvements I'm exploring:
-
-1. **Cross-document multi-hop queries**: generating synthetic queries that require information from multiple documents (e.g. "How does the UAVG implement the GDPR's requirements for data protection officers?"). These teach the model to retrieve across document boundaries, which is critical for production RAG over heterogeneous corpora.
-
-2. **Quality scoring and filtering**: using an LLM judge to score each synthetic (query, chunk) pair on relevance, accuracy, clarity, and specificity, then filtering out low-quality pairs before training. With only ~2,000 pairs, even 5–10% noise matters.
-
-3. **Lower contrastive temperature**: NVIDIA's embedding fine-tuning recipe uses temperature 0.02 (vs. the default 0.05). This sharpens the loss landscape and focuses the model on the hardest negatives. Worth testing now that hard negative filtering is in place.
-
-4. **Hyperparameter sweeps**: confirming that the single LR/epoch configuration used throughout is actually near-optimal. A minimal sweep (3 LRs × 3 epoch counts = 9 runs, ~3 hours) would provide this confidence.
-
----
-
-## Final Scoreboard
-
-| Model | Params | NDCG@10 | vs. OpenAI |
-|---|---|---|---|
-| OpenAI text-embedding-3-large | Unknown | 0.8635 | — |
-| multilingual-e5-large (zero-shot) | 560M | 0.8612 | -0.0023 |
-| multilingual-e5-large (fine-tuned) | 560M | **0.9492** | +0.0857 |
-| Qwen3-Embedding-0.6B (fine-tuned) | 620M | **0.9467** | +0.0832 |
-| Qwen3-Embedding-8B LoRA (fine-tuned) | 8B | **0.9625** | +0.0990 |
-| **Qwen3-Embedding-4B LoRA (fine-tuned)** | **4B** | **0.9658** | **+0.1023** |
-
-A few hours of training on synthetic data, a single GPU, and €0.75 in electricity. The models are local, private, free at inference, and far better at the task than the best proprietary embedding API.
-
-Domain-specific fine-tuning isn't optional for serious RAG. It's the single highest-leverage investment you can make.
 
 ---
 
