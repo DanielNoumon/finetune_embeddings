@@ -264,57 +264,38 @@ The 4B model, training just 11.8M out of 4,034M parameters, outperformed the ful
 
 ## Cross-Domain Evaluation: Does It Generalise?
 
-The results above were all measured on an 85-chunk EU AI Act eval set, where the models were trained and evaluated on the same document. This made for a favourable retrieval environment: the correct chunk only needed to be distinguished from 84 others. Two questions remained:
+The results above were all measured on an 85-chunk EU AI Act eval set (the held-out 15% of chunks). This made for a favourable retrieval environment: the correct chunk only needed to be distinguished from 84 others. Two questions remained:
 
 1. **Is 85 chunks realistic?** A production RAG pipeline has hundreds or thousands of chunks. With a small corpus, even zero-shot models score artificially high.
 2. **Is this generalisation or memorisation?** The models were trained on EU AI Act text. Do they learn transferable Dutch legal retrieval, or just EU AI Act-specific patterns?
 
-To answer both, I added the **Dutch GDPR (AVG)** as a second, completely unseen document and created a combined benchmark.
+To answer both, I chunked and generated synthetic queries for the **Dutch GDPR (AVG)**, a completely separate legal document that no model saw during training. This gave me 377 GDPR chunks and 2,262 queries to use as a clean, held-out generalization test.
 
-| Split | Queries | Corpus chunks | Description |
-|---|---|---|---|
-| Combined | 5,472 | 912 | All queries, all chunks, cross-document retrieval |
-| EU AI Act | 3,210 | 535 | EU AI Act queries vs EU AI Act corpus only |
-| GDPR | 2,262 | 377 | GDPR queries vs GDPR corpus only |
+### GDPR results (completely unseen document)
 
-### The cross-domain results
+NDCG@10 at dim=1024, all models evaluated on the 377-chunk GDPR corpus:
 
-NDCG@10 at dim=1024, all models evaluated on all three splits:
+| Model | GDPR NDCG@10 | Δ vs zero-shot |
+|---|---|---|
+| multilingual-e5-large (zero-shot) | 0.6475 | — |
+| Qwen3-0.6B (zero-shot) | 0.6007 | — |
+| Qwen3-4B (zero-shot) | 0.7179 | — |
+| Qwen3-8B (zero-shot) | 0.7348 | — |
+| OpenAI text-embedding-3-large | 0.6733 | — |
+| multilingual-e5-large (EU AI Act FT) | 0.7311 | +0.0836 |
+| Qwen3-0.6B (EU AI Act FT) | 0.7110 | +0.1103 |
+| **Qwen3-4B (EU AI Act FT)** | **0.7900** | **+0.0721** |
+| **Qwen3-8B (EU AI Act FT)** | **0.8053** | **+0.0705** |
 
-| Model | Combined | EU AI Act | GDPR |
-|---|---|---|---|
-| multilingual-e5-large (zero-shot) | 0.5816 | 0.5584 | 0.6475 |
-| Qwen3-0.6B (zero-shot) | 0.5448 | 0.5349 | 0.6007 |
-| Qwen3-4B (zero-shot) | 0.6494 | 0.6274 | 0.7179 |
-| Qwen3-8B (zero-shot) | 0.6683 | 0.6369 | 0.7348 |
-| OpenAI text-embedding-3-large | 0.6012 | 0.5682 | 0.6733 |
-| multilingual-e5-large (EU AI Act FT) | 0.7199 | 0.7435 | 0.7311 |
-| Qwen3-0.6B (EU AI Act FT) | 0.7118 | 0.7441 | 0.7110 |
-| **Qwen3-4B (EU AI Act FT)** | **0.7596** | **0.7626** | **0.7900** |
-| **Qwen3-8B (EU AI Act FT)** | **0.7744** | **0.7748** | **0.8053** |
-
-Scores are substantially lower than the 85-chunk benchmark. That's expected: the retrieval space is 10× larger and includes an entirely unseen legal document.
-
-**A note on methodology:** The EU AI Act and Combined splits include training queries (the full corpus is used instead of only the held-out 15%). This inflates fine-tuned scores on those splits. Zero-shot scores are unaffected. **The GDPR column is the cleanest generalization test**: the models never saw any GDPR data during training, so those scores reflect pure transfer learning.
+Every fine-tuned model improved on a document it never saw. The models were trained exclusively on EU AI Act data, yet they gained +7–11 points of NDCG@10 on GDPR. This is not memorisation: they learn transferable Dutch legal retrieval patterns (vocabulary, regulatory sentence structure, query-passage matching conventions).
 
 ### What this reveals
 
-**Fine-tuning transfers across legal domains.** All models were fine-tuned only on EU AI Act data, yet every one improved substantially on the completely unseen GDPR. Looking at the clean GDPR column: e5-large jumps from 0.6475 to 0.7311, Qwen3-0.6B from 0.6007 to 0.7110, and Qwen3-4B from 0.7179 to 0.7900. The models learn transferable patterns: Dutch legal vocabulary, regulatory sentence structure, query-passage matching conventions.
+**Fine-tuning transfers across legal domains.** The GDPR gains are consistent across all four model scales. Even the smallest model (e5-large, 560M) picks up +8.4 points on an unseen document after fine-tuning on a different one. One caveat: GDPR is inherently easier than the EU AI Act (all models score +6–9 pts higher on GDPR zero-shot, likely due to shorter, more prescriptive articles). The transfer finding still holds, but the absolute GDPR scores are partly inflated by corpus difficulty.
 
-One caveat: GDPR is inherently easier than the EU AI Act (all models score +6–9 pts higher on GDPR zero-shot, likely due to shorter, more prescriptive articles). The transfer ratio below is computed from deltas, not absolutes, which controls for this:
+**Open-source zero-shot beats proprietary.** This was invisible on the old 85-chunk benchmark, where OpenAI (0.8635) edged out e5-large (0.8612). On the harder GDPR benchmark, Qwen3-4B zero-shot outperforms OpenAI by +4.5 pts (0.7179 vs 0.6733), without any fine-tuning at all.
 
-| Model | EU AI Act lift | GDPR lift | Transfer ratio |
-|---|---|---|---|
-| e5-large | +18.5 pts | +8.4 pts | 45% |
-| Qwen3-0.6B | +20.9 pts | +11.0 pts | 53% |
-| Qwen3-4B | +13.5 pts | +7.2 pts | 53% |
-| Qwen3-8B | +13.8 pts | +7.1 pts | 51% |
-
-Roughly half of the training-domain improvement carries over, consistently across four model scales.
-
-**Open-source zero-shot already beats proprietary.** This was invisible on the old 85-chunk benchmark, where OpenAI (0.8635) edged out e5-large (0.8612). On the harder benchmark, Qwen3-4B zero-shot outperforms OpenAI on every split, including the clean GDPR column (0.7179 vs 0.6733, +4.5 pts).
-
-**Small eval corpora lie.** NDCG@10 of 0.96 on 85 chunks drops to 0.76 on 912 chunks for the same model. Always evaluate on a corpus at least as large as your production index.
+**Small eval corpora lie.** On the original 85-chunk EU AI Act eval, Qwen3-4B LoRA scored 0.9658. On the 377-chunk GDPR (a harder, unseen retrieval space), the same model scores 0.7900. Always evaluate on a corpus at least as large as your production index.
 
 ---
 
