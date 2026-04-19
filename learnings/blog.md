@@ -1,4 +1,4 @@
-# How I Beat OpenAI's Best Embedding Model by 10 Points — Fine-Tuning for Dutch Legal Retrieval
+# How I Beat OpenAI's Best Embedding Model by 10 Points: Fine-Tuning for Dutch Legal Retrieval
 
 *A practical deep-dive into fine-tuning embedding models for domain-specific RAG, from structural chunking to Matryoshka loss, hard negative mining, and lessons learned on bleeding-edge GPU hardware.*
 
@@ -6,13 +6,13 @@
 
 ## The Problem
 
-You're building a retrieval-augmented generation (RAG) pipeline for Dutch legal documents. You need an embedding model that can take a user's question — say, *"Welke verplichtingen gelden voor aanbieders van AI-systemen met een hoog risico?"* — and find the exact article or paragraph that answers it, out of hundreds of chunks.
+You're building a retrieval-augmented generation (RAG) pipeline for Dutch legal documents. You need an embedding model that can take a user's question, say, *"Welke verplichtingen gelden voor aanbieders van AI-systemen met een hoog risico?"*, and find the exact article or paragraph that answers it, out of hundreds of chunks.
 
 Off-the-shelf embedding models like OpenAI's `text-embedding-3-large` are impressively general. They handle 100+ languages, score near the top of MTEB benchmarks, and work out of the box. But "general" isn't "specialised". When your corpus is a 144-page Dutch regulation full of cross-references, numbered paragraphs, and domain-specific terminology, a general model leaves a lot of retrieval quality on the table.
 
-This post documents my experiments fine-tuning open-source embedding models on the **EU AI Act (Dutch translation)** — a single legal document — and how a few hours of GPU time turned generic models into domain specialists that outperform proprietary SOTA by a wide margin.
+This post documents my experiments fine-tuning open-source embedding models on the **EU AI Act (Dutch translation)**, a single legal document, and how a few hours of GPU time turned generic models into domain specialists that outperform proprietary SOTA by a wide margin.
 
-**The headline result:** my best fine-tuned model (Qwen3-Embedding-4B with LoRA) achieved **NDCG@10 = 0.9658**, compared to OpenAI's `text-embedding-3-large` at **0.8635** — a gap of over 10 points on the same evaluation set. Even my smallest model (560M parameters) beat OpenAI by 8.6 points after fine-tuning.
+**The headline result:** my best fine-tuned model (Qwen3-Embedding-4B with LoRA) achieved **NDCG@10 = 0.9658**, compared to OpenAI's `text-embedding-3-large` at **0.8635**, a gap of over 10 points on the same evaluation set. Even my smallest model (560M parameters) beat OpenAI by 8.6 points after fine-tuning.
 
 ---
 
@@ -23,7 +23,7 @@ The EU AI Act (`eu_ai_act_NL.pdf`) is a 144-page Dutch legal regulation with thr
 | Section | Share | Content |
 |---|---|---|
 | Recitals (Overwegingen) | ~42% | 180 numbered recitals providing legislative intent |
-| Articles (Artikelen) | ~49% | 113 articles across 13 chapters — the binding provisions |
+| Articles (Artikelen) | ~49% | 113 articles across 13 chapters, the binding provisions |
 | Annexes (Bijlagen) | ~8% | 13 annexes with reference lists and technical requirements |
 
 It's a challenging retrieval target: dense legal language, extensive cross-referencing between articles, and a hierarchy of chapters, articles, paragraphs (*leden*), and sub-items that carry semantic meaning.
@@ -32,13 +32,13 @@ It's a challenging retrieval target: dense legal language, extensive cross-refer
 
 ## Step 1: Structural Chunking
 
-The first decision was how to split the document into retrievable chunks. The naive approach — fixed-size splitting at 512 tokens — would cut articles mid-sentence and lose legal context. But legal documents have an inherently well-defined hierarchy. Articles, paragraphs, and sub-items are atomic semantic units designed by legislators. A structural chunker respects these boundaries.
+The first decision was how to split the document into retrievable chunks. The naive approach (fixed-size splitting at 512 tokens) would cut articles mid-sentence and lose legal context. But legal documents have an inherently well-defined hierarchy. Articles, paragraphs, and sub-items are atomic semantic units designed by legislators. A structural chunker respects these boundaries.
 
 My approach:
-1. **Clean extraction** — strip headers/footers, fix column-break word splits
-2. **Parse by structure** — recitals by number, articles by paragraph, definitions individually, annexes by item
-3. **Size guardrails** — target 50–1,000 tokens. Oversized chunks split at sentence boundaries with overlap; tiny chunks merged with neighbours
-4. **Rich metadata** — each chunk carries `section_type`, `chapter`, `article_number`, `paragraph_number`, `hierarchy_path`
+1. **Clean extraction**: strip headers/footers, fix column-break word splits
+2. **Parse by structure**: recitals by number, articles by paragraph, definitions individually, annexes by item
+3. **Size guardrails**: target 50–1,000 tokens. Oversized chunks split at sentence boundaries with overlap; tiny chunks merged with neighbours
+4. **Rich metadata**: each chunk carries `section_type`, `chapter`, `article_number`, `paragraph_number`, `hierarchy_path`
 
 **Result:** 573 chunks (223 recitals, 329 articles, 21 annexes). Token range 50–1,015, average 283.
 
@@ -52,7 +52,7 @@ I needed `(query, relevant_chunk)` pairs to train the embedding model. Real user
 
 For each chunk, I generated 6 diverse Dutch queries across types: factual, definitional, procedural, scenario-based, and keyword search terms. Diversity ensures the model learns to match varied phrasings, not just keyword overlap.
 
-The result: **2,284 query-chunk pairs** from 571 unique chunks. I split by chunk ID (not by pair) to prevent data leakage — all queries for a given chunk stay in the same split.
+The result: **2,284 query-chunk pairs** from 571 unique chunks. I split by chunk ID (not by pair) to prevent data leakage: all queries for a given chunk stay in the same split.
 
 | Split | Pairs | Chunks |
 |---|---|---|
@@ -73,7 +73,7 @@ Before fine-tuning anything, I measured how well existing models handle the task
 | Qwen3-Embedding-8B | 0.8836 | Open-source decoder, 8B params |
 | OpenAI text-embedding-3-large | 0.8635 | Proprietary, via Azure API |
 
-The proprietary model and the open-source e5-large start at virtually the same level on this task (0.8635 vs 0.8612). OpenAI has no inherent advantage on Dutch legal text — its strength is breadth across languages and domains, not depth on any specific one. The Qwen3 family scales predictably: 0.6B → 4B → 8B yields steady gains, but none break 0.90 without fine-tuning.
+The proprietary model and the open-source e5-large start at virtually the same level on this task (0.8635 vs 0.8612). OpenAI has no inherent advantage on Dutch legal text; its strength is breadth across languages and domains, not depth on any specific one. The Qwen3 family scales predictably: 0.6B → 4B → 8B yields steady gains, but none break 0.90 without fine-tuning.
 
 ---
 
@@ -81,7 +81,7 @@ The proprietary model and the open-source e5-large start at virtually the same l
 
 All experiments use the same evaluation protocol to ensure fair comparison.
 
-**Metric: NDCG@10** (Normalized Discounted Cumulative Gain at rank 10) — the primary metric throughout this post. It measures how well the model ranks the correct passage within the top 10 results for each query, with higher-ranked correct results scoring more. A score of 1.0 means the correct passage is always ranked #1; 0.5 means correct passages are scattered around the results.
+**Metric: NDCG@10** (Normalized Discounted Cumulative Gain at rank 10), the primary metric throughout this post. It measures how well the model ranks the correct passage within the top 10 results for each query, with higher-ranked correct results scoring more. A score of 1.0 means the correct passage is always ranked #1; 0.5 means correct passages are scattered around the results.
 
 **Eval set:** 340 queries mapped to 85 unique corpus chunks (15% of the data, split by chunk ID to prevent leakage). For each query, the model must rank the correct chunk above all 84 other chunks by cosine similarity.
 
@@ -107,16 +107,16 @@ I used a two-stage approach that's become standard in embedding fine-tuning:
 **Multiple Negatives Ranking Loss (MNRL)** treats every other passage in the batch as a negative example. With batch size 64, each query gets 63 negatives "for free". The model learns: "given this query, the correct passage should be more similar than all 63 other passages in this batch."
 
 > ![Figure: In-batch negatives]()
-> *Conceptual diagram: how MNRL constructs the N×N similarity matrix from a single batch. Each query is compared against every passage in the batch — the diagonal contains positive pairs, everything else is a negative. Source: sentence-transformers documentation or similar.*
+> *Conceptual diagram: how MNRL constructs the N×N similarity matrix from a single batch. Each query is compared against every passage in the batch; the diagonal contains positive pairs, everything else is a negative. Source: sentence-transformers documentation or similar.*
 
-I wrapped MNRL in **MatryoshkaLoss**, which trains the model to produce useful embeddings at multiple truncated dimensionalities (1024, 768, 512, 256, 128, 64) simultaneously. This means you can use 1024-dim for maximum accuracy or 128-dim for 8× faster search — no retraining needed.
+I wrapped MNRL in **MatryoshkaLoss**, which trains the model to produce useful embeddings at multiple truncated dimensionalities (1024, 768, 512, 256, 128, 64) simultaneously. This means you can use 1024-dim for maximum accuracy or 128-dim for 8× faster search, no retraining needed.
 
 > ![Figure: Matryoshka embeddings]()
 > *Conceptual diagram: Matryoshka Representation Learning. Like Russian nesting dolls, each prefix of the embedding vector is trained to be independently useful. Truncating from 1024 to 256 dims discards the outer layers but preserves the core information. Source: original MRL paper (Kusupati et al., 2022) or Hugging Face blog.*
 
 ### Stage 2: Hard Negative Mining
 
-After Stage 1, the model is good at distinguishing clearly different topics but may struggle with **confusing near-misses** — passages that are topically similar but answer a different question.
+After Stage 1, the model is good at distinguishing clearly different topics but may struggle with **confusing near-misses: passages that are topically similar but answer a different question.**
 
 I used the Stage 1 model to mine hard negatives:
 1. Encode all queries and corpus chunks with the Stage 1 model
@@ -132,7 +132,7 @@ The key insight: mining from the *adapted* model (not the base) produces more in
 Stage 2 then continues training from the Stage 1 checkpoint with these hard negatives added to the dataset. A lower learning rate (typically half of Stage 1) prevents catastrophic forgetting.
 
 ![Training loss across all runs: Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 and Stage 2](figures/all_runs_train_loss.png)
-*W&B training loss across all runs. The 0.6B models (blue/green) start with higher contrastive loss (~14) and drop steeply — the smaller model has to work harder. The 4B LoRA models (orange/pink) start lower (~7–9) thanks to stronger pretrained representations. All runs converge to ~2 by the end of training.*
+*W&B training loss across all runs. The 0.6B models (blue/green) start with higher contrastive loss (~14) and drop steeply; the smaller model has to work harder. The 4B LoRA models (orange/pink) start lower (~7–9) thanks to stronger pretrained representations. All runs converge to ~2 by the end of training.*
 
 ---
 
@@ -150,14 +150,14 @@ A decoder-based embedding model from Alibaba, built on Qwen3. Uses last-token po
 
 ### Qwen3-Embedding-4B (4B, decoder, LoRA)
 
-The 4B variant — too large for full fine-tuning on my 32GB GPU. I used **LoRA (Low-Rank Adaptation)**, which freezes the base weights and trains only small adapter matrices. With rank 16 targeting attention projections, I trained just 11.8M parameters (0.29% of the total) — yet this was enough to outperform every other model.
+The 4B variant, too large for full fine-tuning on my 32GB GPU. I used **LoRA (Low-Rank Adaptation)**, which freezes the base weights and trains only small adapter matrices. With rank 16 targeting attention projections, I trained just 11.8M parameters (0.29% of the total), yet this was enough to outperform every other model.
 
 > ![Figure: LoRA decomposition]()
-> *Conceptual diagram: LoRA inserts two small matrices A and B alongside the frozen weight matrix W. The update is W + A×B, where A and B have low rank r (e.g. 16). Only A and B are trained — the original weights are untouched. Source: original LoRA paper (Hu et al., 2021).*
+> *Conceptual diagram: LoRA inserts two small matrices A and B alongside the frozen weight matrix W. The update is W + A×B, where A and B have low rank r (e.g. 16). Only A and B are trained; the original weights are untouched. Source: original LoRA paper (Hu et al., 2021).*
 
 ### Qwen3-Embedding-8B (8B, decoder, LoRA)
 
-The largest model in the Qwen3-Embedding family — 7.6B parameters, 4096-dim embeddings, #1 on the MTEB multilingual leaderboard. At ~16GB in bf16 for base weights alone, it pushed my 32GB RTX 5090 to its absolute limit: `mini_batch_size=1` for both stages, `eval_batch_size=1`, and mandatory LoRA merging before any evaluation (the PEFT wrapper overhead alone causes OOM on 8B). With rank 16, this yields 15.3M trainable parameters (0.20%).
+The largest model in the Qwen3-Embedding family: 7.6B parameters, 4096-dim embeddings, #1 on the MTEB multilingual leaderboard. At ~16GB in bf16 for base weights alone, it pushed my 32GB RTX 5090 to its absolute limit: `mini_batch_size=1` for both stages, `eval_batch_size=1`, and mandatory LoRA merging before any evaluation (the PEFT wrapper overhead alone causes OOM on 8B). With rank 16, this yields 15.3M trainable parameters (0.20%).
 
 ---
 
@@ -176,9 +176,9 @@ All results on the held-out eval set: 340 queries, 85 corpus chunks, NDCG@10 at 
 | Qwen3-Embedding-8B (LoRA) | 0.8836 | **0.9625** | 0.9625 | +0.0789 |
 | OpenAI text-embedding-3-large | **0.8635** | — | — | — |
 
-The e5-large appears twice because the batch-8 RTX pipeline (fewer in-batch negatives, more hard negative gain) and the batch-64 Colab pipeline produced different Stage 1/Stage 2 splits — but converged to similar totals, as discussed below.
+The e5-large appears twice because the batch-8 RTX pipeline (fewer in-batch negatives, more hard negative gain) and the batch-64 Colab pipeline produced different Stage 1/Stage 2 splits, but converged to similar totals, as discussed below.
 
-Fine-tuning adds 8–15 points of NDCG@10 across every model tested. The 4B LoRA model — training just 0.29% of its parameters on 1,944 synthetic pairs — beats OpenAI's best embedding API by over 10 points. The 8B model matches the 4B at dim=1024 but offers marginal gains at lower dimensions — the 4B is the sweet spot given the 2× VRAM cost of 8B.
+Fine-tuning adds 8–15 points of NDCG@10 across every model tested. The 4B LoRA model, training just 0.29% of its parameters on 1,944 synthetic pairs, beats OpenAI's best embedding API by over 10 points. The 8B model matches the 4B at dim=1024 but offers marginal gains at lower dimensions. The 4B is the sweet spot given the 2× VRAM cost of 8B.
 
 ![NDCG@10 at dim=1024 over training steps for Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 (MNRL) and Stage 2 (hard negatives)](figures/qwen3_4b_06b_dutch_regs_ndcg_dim1024.png)
 *W&B training curves: NDCG@10 at dim=1024 on the 3-document eval set. The 4B LoRA model (pink/orange) starts higher and stays above the 0.6B (green/purple) throughout. Stage 2 hard negatives (dots) provide a consistent bump over Stage 1 MNRL (lines).*
@@ -198,7 +198,7 @@ One of the most practically useful results. MatryoshkaLoss flattened the quality
 Before fine-tuning, dim=64 retained only 70% of dim=1024's quality. After: **95.7%**. This means you can use 64-dimensional embeddings (16× less storage, 16× faster search) with barely any quality loss. For production RAG, this is transformative.
 
 ![NDCG@10 at dim=128 over training steps for Qwen3-4B LoRA and Qwen3-0.6B](figures/qwen3_4b_06b_dutch_regs_ndcg_dim128.png)
-*W&B training curves at dim=128: even at 8× reduced dimensionality, the 4B LoRA model (pink) reaches 0.895 — within 4% of its full dim=1024 score. MatryoshkaLoss ensures quality is preserved at every truncation point.*
+*W&B training curves at dim=128: even at 8× reduced dimensionality, the 4B LoRA model (pink) reaches 0.895, within 4% of its full dim=1024 score. MatryoshkaLoss ensures quality is preserved at every truncation point.*
 
 ### vs. Proprietary SOTA
 
@@ -244,11 +244,11 @@ The fix: **filtering** with three parameters:
 
 | Parameter | Value | Purpose |
 |---|---|---|
-| `range_min` | 5 | Skip the top-5 most similar candidates — they're likely false negatives or near-duplicates |
+| `range_min` | 5 | Skip the top-5 most similar candidates, as they're likely false negatives or near-duplicates |
 | `margin` | 0.1 | Negative similarity must be at least 0.1 lower than the query-positive similarity |
-| `max_score` | 0.9 | Skip any candidate with cosine similarity > 0.9 — likely a true positive |
+| `max_score` | 0.9 | Skip any candidate with cosine similarity > 0.9, likely a true positive |
 
-This produces "Goldilocks" negatives — hard enough to be informative, but not so hard they're actually correct answers the model shouldn't learn to reject. For datasets under ~10K pairs, **1 filtered hard negative per query** is the sweet spot.
+This produces "Goldilocks" negatives: hard enough to be informative, but not so hard they're actually correct answers the model shouldn't learn to reject. For datasets under ~10K pairs, **1 filtered hard negative per query** is the sweet spot.
 
 ### 3. LoRA on 0.29% of parameters beats full fine-tuning
 
@@ -267,7 +267,7 @@ A fine-tuned 0.6B model beats a zero-shot 8B model (13× larger). On my cross-do
 
 ### 5. Fine-tuning on one legal domain transfers to another
 
-I evaluated all EU AI Act-trained models on the Dutch GDPR — a completely unseen document. The result: **roughly 50% of the training-domain improvement carried over**, consistently across four model scales:
+I evaluated all EU AI Act-trained models on the Dutch GDPR, a completely unseen document. The result: **roughly 50% of the training-domain improvement carried over**, consistently across four model scales:
 
 | Model | EU AI Act lift | GDPR lift | Transfer ratio |
 |---|---|---|---|
@@ -276,7 +276,7 @@ I evaluated all EU AI Act-trained models on the Dutch GDPR — a completely unse
 | Qwen3-4B | +13.5 pts | +7.2 pts | 53% |
 | Qwen3-8B | +13.8 pts | +7.1 pts | 51% |
 
-The models don't just memorise EU AI Act content — they learn transferable Dutch legal retrieval patterns: legal vocabulary, regulatory sentence structure, query-passage matching conventions.
+The models don't just memorise EU AI Act content. They learn transferable Dutch legal retrieval patterns: legal vocabulary, regulatory sentence structure, query-passage matching conventions.
 
 ### 6. Small eval corpora lie
 
@@ -287,13 +287,13 @@ My initial benchmark had only 85 chunks. The moment I expanded to 912 chunks acr
 | Qwen3-4B LoRA (fine-tuned) | 0.9658 | 0.7596 | -0.206 |
 | OpenAI text-embedding-3-large | 0.8635 | 0.6012 | -0.263 |
 
-With a small corpus, even mediocre models score high because there are few distractors. The larger benchmark is far more realistic — in production, your index will have hundreds or thousands of chunks. Always evaluate on a corpus at least as large as your production index.
+With a small corpus, even mediocre models score high because there are few distractors. The larger benchmark is far more realistic. In production, your index will have hundreds or thousands of chunks. Always evaluate on a corpus at least as large as your production index.
 
 ---
 
 ## The GPU Story: RTX 5090 Blackwell
 
-All training beyond the initial Colab experiments ran on an NVIDIA RTX 5090 — 32GB VRAM, Blackwell architecture (sm_120). This was one of the first consumer Blackwell GPUs, and I discovered several issues that don't occur on older hardware.
+All training beyond the initial Colab experiments ran on an NVIDIA RTX 5090: 32GB VRAM, Blackwell architecture (sm_120). This was one of the first consumer Blackwell GPUs, and I discovered several issues that don't occur on older hardware.
 
 ### bf16 Collapse
 
@@ -302,15 +302,15 @@ My first model (multilingual-e5-large) immediately collapsed when trained in bf1
 **Why it happens:** bf16 has only 7 bits of mantissa precision (~2 decimal digits). During the backward pass through 24 transformer layers, rounding errors compound. On Blackwell's floating-point units specifically, this compounding is severe enough to turn gradients into noise. The optimizer then makes random weight updates, collapsing the embedding space.
 
 > ![Figure: fp32 vs bf16 precision]()
-> *Conceptual diagram: floating-point format comparison. fp32 has 23 mantissa bits (~7 decimal digits); bf16 has only 7 mantissa bits (~2 decimal digits). The mantissa determines precision — fewer bits means more rounding error per operation, which compounds through 24 transformer layers. Source: Google Brain bfloat16 documentation or similar.*
+> *Conceptual diagram: floating-point format comparison. fp32 has 23 mantissa bits (~7 decimal digits); bf16 has only 7 mantissa bits (~2 decimal digits). The mantissa determines precision; fewer bits means more rounding error per operation, which compounds through 24 transformer layers. Source: Google Brain bfloat16 documentation or similar.*
 
 **The fix:** fp32 + eager attention. This costs 2× VRAM (limiting batch size to 8) but is fully stable.
 
-**The twist:** When I switched to Qwen3-Embedding, bf16 worked perfectly. Qwen3's `RMSNorm` upcasts inputs to fp32 internally before normalization, keeping the critical operations precise even in bf16. This architectural detail — invisible to the user — is the difference between training stability and catastrophic failure.
+**The twist:** When I switched to Qwen3-Embedding, bf16 worked perfectly. Qwen3's `RMSNorm` upcasts inputs to fp32 internally before normalization, keeping the critical operations precise even in bf16. This architectural detail, invisible to the user, is the difference between training stability and catastrophic failure.
 
 ### The Batch Size Cascade
 
-fp32 on e5-large halved my maximum batch size (from 64 to 8). For MNRL, batch size *is* training quality — batch 8 means only 7 in-batch negatives vs. 63 at batch 64. I initially thought this would be crippling.
+fp32 on e5-large halved my maximum batch size (from 64 to 8). For MNRL, batch size *is* training quality: batch 8 means only 7 in-batch negatives vs. 63 at batch 64. I initially thought this would be crippling.
 
 It wasn't. As described above, hard negatives compensated. The batch-8 pipeline produced the **best overall e5-large result** (0.9492). But this experience motivated me to implement GradCache (CachedMNRL), which decouples contrastive pool size from VRAM:
 
@@ -330,9 +330,9 @@ When fine-tuning LoRA models (4B, 8B) with SentenceTransformers, I discovered th
 
 ### Training Costs
 
-The entire project — all models, both stages, including failed runs and debugging — cost approximately **€0.75 in electricity** on the local RTX 5090. Equivalent cloud compute (H100 at ~$2.95/hr) would have been $100–250 including realistic iteration.
+The entire project (all models, both stages, including failed runs and debugging) cost approximately **€0.75 in electricity** on the local RTX 5090. Equivalent cloud compute (H100 at ~$2.95/hr) would have been $100–250 including realistic iteration.
 
-The hidden cost of cloud isn't the per-hour rate — it's the "cost anxiety" tax on iteration speed. On a local GPU, you can start a run, spot an issue after 5 minutes, kill it, fix it, restart — at zero marginal cost. That freedom to iterate cheaply is arguably the biggest advantage of local training for research.
+The hidden cost of cloud isn't the per-hour rate; it's the "cost anxiety" tax on iteration speed. On a local GPU, you can start a run, spot an issue after 5 minutes, kill it, fix it, restart, at zero marginal cost. That freedom to iterate cheaply is arguably the biggest advantage of local training for research.
 
 ---
 
@@ -352,7 +352,7 @@ The hidden cost of cloud isn't the per-hour rate — it's the "cost anxiety" tax
 
 For anyone looking to replicate this on their own domain:
 
-1. **Chunk structurally.** Respect the document's natural boundaries — articles, sections, paragraphs. Don't split at arbitrary token counts.
+1. **Chunk structurally.** Respect the document's natural boundaries: articles, sections, paragraphs. Don't split at arbitrary token counts.
 
 2. **Generate synthetic queries with an LLM.** 5–6 diverse queries per chunk, covering different question types (factual, definitional, procedural, scenario, keyword). This takes minutes and costs pennies.
 
@@ -372,17 +372,17 @@ Total wall-clock time for the full pipeline (chunking → synthetic data → Sta
 
 ## Next Steps
 
-The results above were all trained on a single document (EU AI Act). The natural next step is **multi-document fine-tuning** — training on EU AI Act + GDPR + UAVG (Dutch implementation law) jointly. Early results with Qwen3-0.6B on this combined corpus show NDCG@10 = 0.9036 on a 145-chunk, 858-query eval set — strong performance across three diverse legal documents from a single model.
+The results above were all trained on a single document (EU AI Act). The natural next step is **multi-document fine-tuning**, training on EU AI Act + GDPR + UAVG (Dutch implementation law) jointly. Early results with Qwen3-0.6B on this combined corpus show NDCG@10 = 0.9036 on a 145-chunk, 858-query eval set, with strong performance across three diverse legal documents from a single model.
 
 Further improvements I'm exploring:
 
-1. **Cross-document multi-hop queries** — generating synthetic queries that require information from multiple documents (e.g. "How does the UAVG implement the GDPR's requirements for data protection officers?"). These teach the model to retrieve across document boundaries, which is critical for production RAG over heterogeneous corpora.
+1. **Cross-document multi-hop queries**: generating synthetic queries that require information from multiple documents (e.g. "How does the UAVG implement the GDPR's requirements for data protection officers?"). These teach the model to retrieve across document boundaries, which is critical for production RAG over heterogeneous corpora.
 
-2. **Quality scoring and filtering** — using an LLM judge to score each synthetic (query, chunk) pair on relevance, accuracy, clarity, and specificity, then filtering out low-quality pairs before training. With only ~2,000 pairs, even 5–10% noise matters.
+2. **Quality scoring and filtering**: using an LLM judge to score each synthetic (query, chunk) pair on relevance, accuracy, clarity, and specificity, then filtering out low-quality pairs before training. With only ~2,000 pairs, even 5–10% noise matters.
 
-3. **Lower contrastive temperature** — NVIDIA's embedding fine-tuning recipe uses temperature 0.02 (vs. the default 0.05). This sharpens the loss landscape and focuses the model on the hardest negatives. Worth testing now that hard negative filtering is in place.
+3. **Lower contrastive temperature**: NVIDIA's embedding fine-tuning recipe uses temperature 0.02 (vs. the default 0.05). This sharpens the loss landscape and focuses the model on the hardest negatives. Worth testing now that hard negative filtering is in place.
 
-4. **Hyperparameter sweeps** — confirming that the single LR/epoch configuration used throughout is actually near-optimal. A minimal sweep (3 LRs × 3 epoch counts = 9 runs, ~3 hours) would provide this confidence.
+4. **Hyperparameter sweeps**: confirming that the single LR/epoch configuration used throughout is actually near-optimal. A minimal sweep (3 LRs × 3 epoch counts = 9 runs, ~3 hours) would provide this confidence.
 
 ---
 
@@ -399,7 +399,7 @@ Further improvements I'm exploring:
 
 A few hours of training on synthetic data, a single GPU, and €0.75 in electricity. The models are local, private, free at inference, and far better at the task than the best proprietary embedding API.
 
-Domain-specific fine-tuning isn't optional for serious RAG — it's the single highest-leverage investment you can make.
+Domain-specific fine-tuning isn't optional for serious RAG. It's the single highest-leverage investment you can make.
 
 ---
 
