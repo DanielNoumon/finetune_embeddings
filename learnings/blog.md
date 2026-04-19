@@ -14,6 +14,24 @@ This post documents my experiments fine-tuning open-source embedding models on t
 
 **The headline result:** my best fine-tuned model (Qwen3-Embedding-4B with LoRA) achieved **NDCG@10 = 0.9658**, compared to OpenAI's `text-embedding-3-large` at **0.8635**, a gap of over 10 points on the same evaluation set. Even my smallest model (560M parameters) beat OpenAI by 8.6 points after fine-tuning.
 
+### Table of Contents
+
+1. [The Document](#the-document)
+2. [Structural Chunking](#step-1-structural-chunking)
+3. [Synthetic Training Data](#step-2-synthetic-training-data)
+4. [Baselines: How Good Is Zero-Shot?](#baselines-how-good-is-zero-shot)
+5. [Evaluation Methodology](#evaluation-methodology)
+6. [The Training Pipeline](#step-3-the-training-pipeline)
+7. [The Models](#the-models)
+8. [Results: The EU AI Act Benchmark](#results-the-eu-ai-act-benchmark)
+9. [The Surprising Findings](#the-surprising-findings)
+10. [Cross-Domain Evaluation](#cross-domain-evaluation-does-it-generalise)
+11. [Hardware: Training on an RTX 5090](#hardware-training-on-an-rtx-5090)
+12. [What I'd Do Differently](#what-id-do-differently)
+13. [The Recipe](#the-recipe)
+14. [Next Steps](#next-steps)
+15. [Final Scoreboard](#final-scoreboard)
+
 ---
 
 ## The Document
