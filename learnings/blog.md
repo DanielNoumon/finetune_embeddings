@@ -112,9 +112,6 @@ I used a two-stage approach that's become standard in embedding fine-tuning:
 
 **Multiple Negatives Ranking Loss (MNRL)** treats every other passage in the batch as a negative example. With batch size 64, each query gets 63 negatives "for free". The model learns: "given this query, the correct passage should be more similar than all 63 other passages in this batch."
 
-> ![Figure: In-batch negatives]()
-> *Conceptual diagram: how MNRL constructs the N×N similarity matrix from a single batch. Each query is compared against every passage in the batch; the diagonal contains positive pairs, everything else is a negative. Source: sentence-transformers documentation or similar.*
-
 I wrapped MNRL in **MatryoshkaLoss**, which trains the model to produce useful embeddings at multiple truncated dimensionalities (1024, 768, 512, 256, 128, 64) simultaneously. This means you can use 1024-dim for maximum accuracy or 128-dim for 8× faster search, no retraining needed.
 
 ![Matryoshka Representation Learning: each prefix of the embedding vector is independently useful](figures/matryoshka-small-gif.gif)
@@ -131,9 +128,6 @@ I used the Stage 1 model to mine hard negatives:
 4. Take the most similar wrong chunks as hard negatives
 
 The key insight: mining from the *adapted* model (not the base) produces more informative negatives. A passage that fools the already-fine-tuned model is a genuinely confusing case.
-
-> ![Figure: Hard negatives in embedding space]()
-> *Conceptual diagram: embedding space showing a query, its positive passage (close), easy negatives (far away), and hard negatives (close but wrong). Hard negatives force the model to learn fine-grained distinctions. Source: SBERT or ANCE paper illustrations.*
 
 Stage 2 then continues training from the Stage 1 checkpoint with these hard negatives added to the dataset. A lower learning rate (typically half of Stage 1) prevents catastrophic forgetting.
 
@@ -157,9 +151,6 @@ A decoder-based embedding model from Alibaba, built on Qwen3. Uses last-token po
 ### Qwen3-Embedding-4B (4B, decoder, LoRA)
 
 The 4B variant, too large for full fine-tuning on my 32GB GPU. I used **LoRA (Low-Rank Adaptation)**, which freezes the base weights and trains only small adapter matrices. With rank 16 targeting attention projections, I trained just 11.8M parameters (0.29% of the total), yet this was enough to outperform every other model.
-
-> ![Figure: LoRA decomposition]()
-> *Conceptual diagram: LoRA inserts two small matrices A and B alongside the frozen weight matrix W. The update is W + A×B, where A and B have low rank r (e.g. 16). Only A and B are trained; the original weights are untouched. Source: original LoRA paper (Hu et al., 2021).*
 
 ### Qwen3-Embedding-8B (8B, decoder, LoRA)
 
