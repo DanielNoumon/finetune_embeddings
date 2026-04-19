@@ -186,9 +186,6 @@ The e5-large appears twice because the batch-8 RTX pipeline (fewer in-batch nega
 
 Fine-tuning adds 8–15 points of NDCG@10 across every model tested. The 4B LoRA model, training just 0.29% of its parameters on 1,944 synthetic pairs, beats OpenAI's best embedding API by over 10 points. The 8B model matches the 4B at dim=1024 but offers marginal gains at lower dimensions. The 4B is the sweet spot given the 2× VRAM cost of 8B.
 
-![NDCG@10 at dim=1024 over training steps for Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 (MNRL) and Stage 2 (hard negatives)](figures/qwen3_4b_06b_dutch_regs_ndcg_dim1024.png)
-*W&B training curves: NDCG@10 at dim=1024 on the 3-document eval set. The 4B LoRA model (pink/orange) starts higher and stays above the 0.6B (green/purple) throughout. Stage 2 hard negatives (dots) provide a consistent bump over Stage 1 MNRL (lines).*
-
 ### Matryoshka: Quality at Every Size
 
 One of the most practically useful results. MatryoshkaLoss flattened the quality-vs-size curve dramatically:
@@ -202,9 +199,6 @@ One of the most practically useful results. MatryoshkaLoss flattened the quality
 | 64 | 0.6009 | 0.9058 | 95.7% |
 
 Before fine-tuning, dim=64 retained only 70% of dim=1024's quality. After: **95.7%**. This means you can use 64-dimensional embeddings (16× less storage, 16× faster search) with barely any quality loss. For production RAG, this is transformative.
-
-![NDCG@10 at dim=128 over training steps for Qwen3-4B LoRA and Qwen3-0.6B](figures/qwen3_4b_06b_dutch_regs_ndcg_dim128.png)
-*W&B training curves at dim=128: even at 8× reduced dimensionality, the 4B LoRA model (pink) reaches 0.895, within 4% of its full dim=1024 score. MatryoshkaLoss ensures quality is preserved at every truncation point.*
 
 ### vs. Proprietary SOTA
 
