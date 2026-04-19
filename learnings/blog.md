@@ -301,15 +301,7 @@ Every fine-tuned model improved on a document it never saw. The models were trai
 
 ## Hardware: Training on an RTX 5090
 
-All training beyond initial Colab experiments ran on a single NVIDIA RTX 5090 (32GB VRAM, Blackwell sm_120). This section covers the practical engineering challenges and workarounds.
-
-### bf16 collapse on Blackwell
-
-My first e5-large run collapsed instantly in bf16: gradient norms spiked to 500–4,000+ and all cosine similarities converged to 1.0. bf16 has only 7 mantissa bits (~2 decimal digits of precision). Through 24 transformer layers, rounding errors compound until gradients become noise. This didn't happen on Colab T4 or A100; it's specific to Blackwell's floating-point units.
-
-**The fix for e5-large:** fp32 + eager attention. Costs 2× VRAM, limiting micro-batch to 8.
-
-**Why Qwen3 was fine in bf16:** Qwen3's `RMSNorm` upcasts to fp32 internally before normalization, keeping the numerically sensitive operations precise. This invisible architectural detail is the difference between stability and catastrophic failure. I only discovered this by reading the Qwen3 source code after wondering why the same GPU handled one model family but not the other.
+All training ran on a single NVIDIA RTX 5090 (32GB VRAM, Blackwell sm_120).
 
 ### CachedMNRL (GradCache): decoupling batch size from VRAM
 
@@ -332,33 +324,6 @@ The Qwen3-8B model pushed the RTX 5090 to its absolute limit. Base weights alone
 The trickiest issue: training completed successfully, but the script OOM'd during the final evaluation (before `save_pretrained`). During in-trainer eval, the training state (optimizer, cached embeddings) still occupies memory alongside the evaluation forward pass. The fix was setting `eval_batch_size=1`, but I only discovered this after losing the final save and having to recover from Trainer checkpoints.
 
 Another 8B-specific gotcha: evaluating a model loaded as `base + PeftModel.from_pretrained()` also OOM'd. The PEFT wrapper adds overhead from duplicate weight references and adapter bookkeeping. The fix: always `merge_and_unload()` before evaluation, which merges the LoRA weights into the base and removes the wrapper entirely.
-
-### LoRA saves memory, not compute
-
-A common misconception: LoRA training should be faster because you're training fewer parameters. In practice, the 0.6B model (560M trainable, full fine-tuning) trained faster per epoch than the 4B model (11.8M trainable, LoRA). Every training step still runs a full forward and backward pass through the entire model. The frozen weights participate in every computation. LoRA only reduces the weight *update* step (a tiny fraction of total time) and the optimizer state memory.
-
-| Model | Stage | Trainable params | ~Time/epoch | ~Total |
-|---|---|---|---|---|
-| Qwen3-0.6B (full FT) | Stage 1 | 560M | 3.6 min | 11 min |
-| Qwen3-0.6B (full FT) | Stage 2 | 560M | 7 min | 14 min |
-| Qwen3-4B (LoRA) | Stage 1 | 11.8M | 13.3 min | 40 min |
-| Qwen3-4B (LoRA) | Stage 2 | 11.8M | 24.9 min | 50 min |
-| Qwen3-8B (LoRA) | Stage 1 | 15.3M | 18.3 min | 55 min |
-| Qwen3-8B (LoRA) | Stage 2 | 15.3M | 32.3 min | 65 min |
-
-**Grand total: ~3.9 hours** for all three models, both stages. Stage 2 takes ~1.8× longer per epoch than Stage 1 despite the same sample count: triplets require encoding 3 texts (query + positive + hard negative) vs 2 for pairs.
-
-### The PEFT checkpoint bug
-
-HuggingFace Trainer's `load_best_model_at_end=True` is silently broken with PEFT + SentenceTransformers. The Trainer restores the best checkpoint via `model.load_state_dict()`, but PEFT saves weights with the prefix `base_model.model.*` while SentenceTransformer expects unprefixed keys. The mismatch fails silently: the last epoch's model (not the best) gets saved.
-
-**The fix:** Set `load_best_model_at_end=False` and add a post-training recovery script that loads each saved checkpoint adapter onto the merged Stage 1 base, evaluates, and keeps the best.
-
-### Training costs
-
-The entire project cost approximately **€0.75 in electricity** on the local RTX 5090 (~3 kWh at Amsterdam rates). Equivalent cloud compute (H100 at ~$2.95/hr) would run $100–250 including realistic iteration: failed runs, config errors, debugging.
-
-The hidden cost of cloud isn't the hourly rate; it's the tax on iteration speed. On a local GPU, you start a run, spot an issue after 5 minutes, kill it, fix it, restart, at zero marginal cost. That freedom to iterate cheaply matters more than raw throughput for research and experimentation.
 
 ---
 
