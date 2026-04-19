@@ -68,7 +68,7 @@ I also produced a context-enriched variant where each chunk gets a hierarchy pre
 
 I needed `(query, relevant_chunk)` pairs to train the embedding model. Real user queries don't exist yet, so I generated them with an LLM.
 
-For each chunk, I generated 6 diverse Dutch queries across types: factual, definitional, procedural, scenario-based, and keyword search terms. Diversity ensures the model learns to match varied phrasings, not just keyword overlap.
+For each chunk, I generated 3–5 diverse Dutch queries across types: factual, definitional, procedural, and scenario-based. Diversity ensures the model learns to match varied phrasings, not just keyword overlap.
 
 The result: **2,284 query-chunk pairs** from 571 unique chunks. I split by chunk ID (not by pair) to prevent data leakage: all queries for a given chunk stay in the same split.
 
@@ -187,19 +187,19 @@ All results on the held-out eval set: 340 queries, 85 corpus chunks, NDCG@10 at 
 | multilingual-e5-large (Colab, batch 64) | 0.8612 | 0.9436 | **0.9465** | +0.0853 |
 | multilingual-e5-large (RTX, batch 8) | 0.8612 | 0.9327 | **0.9492** | +0.0880 |
 | Qwen3-Embedding-0.6B | 0.8013 | 0.9419 | **0.9467** | +0.1454 |
-| Qwen3-Embedding-4B (LoRA) | — | 0.9631 | **0.9658** | — |
+| Qwen3-Embedding-4B (LoRA) | ~0.88 | 0.9631 | **0.9658** | ~+0.09 |
 | Qwen3-Embedding-8B (LoRA) | 0.8836 | **0.9625** | 0.9625 | +0.0789 |
 | OpenAI text-embedding-3-large | **0.8635** | — | — | — |
 
-The e5-large appears twice because the batch-8 RTX pipeline (fewer in-batch negatives, more hard negative gain) and the batch-64 Colab pipeline produced different Stage 1/Stage 2 splits, but converged to similar totals, as discussed below.
+The e5-large appears twice because the batch-8 RTX pipeline (fewer in-batch negatives, more hard negative gain) and the batch-64 Colab pipeline produced different Stage 1/Stage 2 splits, but converged to similar totals (see [The Surprising Findings](#the-surprising-findings)).
 
 Fine-tuning adds 8–15 points of NDCG@10 across every model tested. The 4B LoRA model, training just 0.29% of its parameters on 1,944 synthetic pairs, beats OpenAI's best embedding API by over 10 points. The 8B model matches the 4B at dim=1024 but offers marginal gains at lower dimensions. The 4B is the sweet spot given the 2× VRAM cost of 8B.
 
 ### Matryoshka: Quality at Every Size
 
-One of the most practically useful results. MatryoshkaLoss flattened the quality-vs-size curve dramatically:
+One of the most practically useful results. Here's e5-large before and after fine-tuning with MatryoshkaLoss:
 
-| Dim | Before fine-tuning | After fine-tuning | Retention |
+| Dim | e5-large zero-shot | e5-large fine-tuned | Retention |
 |---|---|---|---|
 | 1024 | 0.8612 | 0.9465 | 100% |
 | 512 | 0.8495 | 0.9412 | 99.4% |
@@ -226,15 +226,15 @@ The gap *widens* at lower dimensions. OpenAI's Matryoshka degradation is much st
 
 ## The Surprising Findings
 
-### 1. Hard negatives are a great equaliser
+### 1. Hard negatives are a great equalizer
 
 I ran the same pipeline with different batch sizes (which controls in-batch negatives):
 
-| Config | In-batch neg | Stage 1 | Stage 2 | Pipeline total |
+| Config | In-batch neg | Stage 1 | Stage 2 | S2 Δ |
 |---|---|---|---|---|
-| Batch 8 | 7 | 0.9327 | **0.9492** | +0.0165 from S2 |
-| Batch 64 | 63 | 0.9436 | **0.9465** | +0.0029 from S2 |
-| Batch 128 | 127 | 0.9422 | **0.9463** | +0.0041 from S2 |
+| Batch 8 | 7 | 0.9327 | **0.9492** | +0.0165 |
+| Batch 64 | 63 | 0.9436 | **0.9465** | +0.0029 |
+| Batch 128 | 127 | 0.9422 | **0.9463** | +0.0041 |
 
 The weaker Stage 1 is (fewer in-batch negatives), the more Stage 2 gains from hard negatives. The pipeline totals converge to nearly the same quality regardless of Stage 1 batch size. Hard negatives fill in exactly what in-batch negatives missed.
 
@@ -294,7 +294,7 @@ Every fine-tuned model improved on a document it never saw. The models were trai
 
 ### What this reveals
 
-**Fine-tuning transfers across legal domains.** The GDPR gains are consistent across all four model scales. Even the smallest model (e5-large, 560M) picks up +8.4 points on an unseen document after fine-tuning on a different one. One caveat: GDPR is inherently easier than the EU AI Act (all models score +6–9 pts higher on GDPR zero-shot, likely due to shorter, more prescriptive articles). The transfer finding still holds, but the absolute GDPR scores are partly inflated by corpus difficulty.
+**Fine-tuning transfers across legal domains.** The GDPR gains are consistent across all four model scales. Even the smallest model (e5-large, 560M) picks up +8.4 points on an unseen document after fine-tuning on a different one. One caveat: GDPR appears inherently easier than the EU AI Act (all models score +6–9 pts higher on GDPR zero-shot), likely due to shorter, more prescriptive articles and a smaller corpus (377 vs 535 chunks). The transfer finding still holds, but the absolute GDPR scores are partly inflated by these factors.
 
 **Open-source zero-shot beats proprietary.** This was invisible on the old 85-chunk benchmark, where OpenAI (0.8635) edged out e5-large (0.8612). On the harder GDPR benchmark, Qwen3-4B zero-shot outperforms OpenAI by +4.5 pts (0.7179 vs 0.6733), without any fine-tuning at all.
 
@@ -308,7 +308,7 @@ All training ran on a single NVIDIA RTX 5090 (32GB VRAM, Blackwell sm_120).
 
 ### CachedMNRL (GradCache): decoupling batch size from VRAM
 
-MNRL uses in-batch negatives: each query treats every other passage in the micro-batch as a negative. With micro-batch 8 (the fp32 limit on e5-large), that's only 7 negatives per query. Industry recommends 64–128.
+MNRL uses in-batch negatives: each query treats every other passage in the micro-batch as a negative. With e5-large on the RTX 5090, bf16 caused embedding collapse due to gradient rounding errors on the Blackwell architecture, forcing fp32 and limiting the micro-batch to 8 (only 7 negatives per query). Industry recommends 64–128.
 
 `CachedMultipleNegativesRankingLoss` (from sentence-transformers, based on the GradCache paper) solves this by decoupling the contrastive pool size from VRAM. It works in three steps:
 
@@ -355,7 +355,7 @@ Domain-specific fine-tuning isn't optional for serious RAG. It's the single high
 
 3. **Start with CachedMNRL.** The standard MNRL → GradCache migration taught me a lot, but if I were doing it again, I'd start with CachedMNRL and skip the batch-size constraints entirely.
 
-4. **Evaluate on a larger corpus sooner.** My initial eval set had only 85 chunks, which inflated scores and masked real retrieval difficulty. The moment I expanded to 912 chunks, NDCG@10 dropped from 0.95+ to 0.76 for the same model. Larger eval corpora give more honest (and more useful) signal.
+4. **Evaluate on a larger corpus sooner.** My initial eval set had only 85 chunks, which inflated scores and masked real retrieval difficulty. When I moved to the cross-domain benchmark (912 chunks, two documents), the same Qwen3-4B LoRA model dropped from 0.9658 to 0.7596 NDCG@10. The harder benchmark is a mix of more chunks, a new document, and cross-document queries, but the lesson is clear: larger eval corpora give more honest signal.
 
 ---
 
@@ -381,11 +381,11 @@ For anyone looking to replicate this on their own domain:
 
 1. **Chunk structurally.** Respect the document's natural boundaries: articles, sections, paragraphs. Don't split at arbitrary token counts.
 
-2. **Generate synthetic queries with an LLM.** 5–6 diverse queries per chunk, covering different question types (factual, definitional, procedural, scenario, keyword). This takes minutes and costs pennies.
+2. **Generate synthetic queries with an LLM.** 3–5 diverse queries per chunk, covering different question types (factual, definitional, procedural, scenario-based). This takes minutes and costs pennies.
 
 3. **Split by chunk, not by pair.** Prevent data leakage by ensuring all queries for a given chunk stay in the same train/eval split.
 
-4. **Stage 1: CachedMNRL + MatryoshkaLoss.** Batch size 128, mini-batch 4, 3 epochs, LR 2e-5. This gives you strong in-batch contrastive learning with multi-dim embeddings.
+4. **Stage 1: CachedMNRL + MatryoshkaLoss.** Batch size 128, mini-batch 4, 3 epochs, LR 2e-5 for full fine-tuning (1e-4 for LoRA). This gives you strong in-batch contrastive learning with multi-dim embeddings.
 
 5. **Stage 2: Mine hard negatives from Stage 1, then fine-tune.** 1 filtered hard negative per query is the sweet spot for small datasets. Lower LR (1e-5), 2 epochs.
 
@@ -397,4 +397,4 @@ Total wall-clock time for the full pipeline (chunking → synthetic data → Sta
 
 ---
 
-*All code, training scripts, and model cards are available in the [repository](https://github.com/DanielNoumon/finetune_embeddings). Models are published on HuggingFace: [qwen3-embedding-0.6b-dutch-regulations](https://huggingface.co/danielnoumon/qwen3-embedding-0.6b-dutch-regulations), [qwen3-embedding-4b-dutch-regulations](https://huggingface.co/danielnoumon/qwen3-embedding-4b-dutch-regulations).*
+*All code, training scripts, and model cards are available in the [repository](https://github.com/DanielNoumon/finetune_embeddings). Models are published on HuggingFace: [qwen3-embedding-0.6b-ai-act-nl](https://huggingface.co/danielnoumon/qwen3-embedding-0.6b-ai-act-nl), [qwen3-embedding-4b-ai-act-nl](https://huggingface.co/danielnoumon/qwen3-embedding-4b-ai-act-nl).*
