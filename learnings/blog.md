@@ -137,8 +137,8 @@ The key insight: mining from the *adapted* model (not the base) produces more in
 
 Stage 2 then continues training from the Stage 1 checkpoint with these hard negatives added to the dataset. A lower learning rate (typically half of Stage 1) prevents catastrophic forgetting.
 
-![Training loss across all runs: Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 and Stage 2](figures/all_runs_train_loss.png)
-*W&B training loss across all runs. The 0.6B models (blue/green) start with higher contrastive loss (~14) and drop steeply; the smaller model has to work harder. The 4B LoRA models (orange/pink) start lower (~7–9) thanks to stronger pretrained representations. All runs converge to ~2 by the end of training.*
+![Training loss: Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 and Stage 2](figures/cleaned_loss.png)
+*W&B training loss for the four Qwen3 runs. Stage 1 lines (mnrl) are longer than Stage 2 lines (hard-neg) because Stage 1 trains for 3 epochs vs 2. The 0.6B model starts with higher loss (~13) than the 4B (~9), reflecting the stronger pretrained representations of the larger model. All runs converge to ~2.*
 
 ---
 
