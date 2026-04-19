@@ -117,8 +117,8 @@ I used a two-stage approach that's become standard in embedding fine-tuning:
 
 I wrapped MNRL in **MatryoshkaLoss**, which trains the model to produce useful embeddings at multiple truncated dimensionalities (1024, 768, 512, 256, 128, 64) simultaneously. This means you can use 1024-dim for maximum accuracy or 128-dim for 8× faster search, no retraining needed.
 
-> ![Figure: Matryoshka embeddings]()
-> *Conceptual diagram: Matryoshka Representation Learning. Like Russian nesting dolls, each prefix of the embedding vector is trained to be independently useful. Truncating from 1024 to 256 dims discards the outer layers but preserves the core information. Source: original MRL paper (Kusupati et al., 2022) or Hugging Face blog.*
+![Matryoshka Representation Learning: each prefix of the embedding vector is independently useful](figures/matryoshka-small-gif.gif)
+*Matryoshka embeddings: like Russian nesting dolls, each prefix of the full embedding vector is trained to be independently useful. Truncating from 1024 to 256 dims preserves the core information. Source: [Hugging Face blog on Matryoshka Embeddings](https://huggingface.co/blog/matryoshka).*
 
 ### Stage 2: Hard Negative Mining
 
