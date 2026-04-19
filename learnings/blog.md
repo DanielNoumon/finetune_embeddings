@@ -260,20 +260,44 @@ This produces "Goldilocks" negatives: hard enough to be informative, but not so 
 
 The 4B model, training just 11.8M out of 4,034M parameters, outperformed the fully fine-tuned 560M e5-large and 620M Qwen3-0.6B models at every dimension. LoRA's constraint to a low-rank subspace acts as an implicit regulariser, preventing overfitting on my small (1,944 pair) dataset while still allowing enough capacity for domain adaptation.
 
-### 4. Fine-tuning beats scaling by a wide margin
+---
 
-| Model | NDCG@10 | Strategy |
-|---|---|---|
-| Qwen3-8B zero-shot | 0.6683 | Scale only |
-| Qwen3-0.6B fine-tuned | **0.7118** | Fine-tuning only |
-| Qwen3-4B fine-tuned | **0.7596** | Both |
-| Qwen3-8B fine-tuned | **0.7744** | Both |
+## Cross-Domain Evaluation: Does It Generalise?
 
-A fine-tuned 0.6B model beats a zero-shot 8B model (13× larger). On my cross-domain benchmark (912 chunks across two legal documents), fine-tuning on ~2,000 synthetic pairs is worth more than a 13× parameter increase. Combining scale with fine-tuning gives the best result, but the marginal return on scale diminishes sharply: 0.6B → 4B gains +4.8 pts, but 4B → 8B adds only +1.5 pts.
+The results above were all measured on an 85-chunk EU AI Act eval set, where the models were trained and evaluated on the same document. This made for a favourable retrieval environment: the correct chunk only needed to be distinguished from 84 others. Two questions remained:
 
-### 5. Fine-tuning on one legal domain transfers to another
+1. **Is 85 chunks realistic?** A production RAG pipeline has hundreds or thousands of chunks. With a small corpus, even zero-shot models score artificially high.
+2. **Is this generalisation or memorisation?** The models were trained on EU AI Act text. Do they learn transferable Dutch legal retrieval, or just EU AI Act-specific patterns?
 
-I evaluated all EU AI Act-trained models on the Dutch GDPR, a completely unseen document. The result: **roughly 50% of the training-domain improvement carried over**, consistently across four model scales:
+To answer both, I added the **Dutch GDPR (AVG)** as a second, completely unseen document and created a combined benchmark.
+
+| Split | Queries | Corpus chunks | Description |
+|---|---|---|---|
+| Combined | 5,472 | 912 | All queries, all chunks, cross-document retrieval |
+| EU AI Act | 3,210 | 535 | EU AI Act queries vs EU AI Act corpus only |
+| GDPR | 2,262 | 377 | GDPR queries vs GDPR corpus only |
+
+### The cross-domain results
+
+NDCG@10 at dim=1024, all models evaluated on all three splits:
+
+| Model | Combined | EU AI Act | GDPR |
+|---|---|---|---|
+| multilingual-e5-large (zero-shot) | 0.5816 | 0.5584 | 0.6475 |
+| Qwen3-0.6B (zero-shot) | 0.5448 | 0.5349 | 0.6007 |
+| Qwen3-4B (zero-shot) | 0.6494 | 0.6274 | 0.7179 |
+| Qwen3-8B (zero-shot) | 0.6683 | 0.6369 | 0.7348 |
+| OpenAI text-embedding-3-large | 0.6012 | 0.5682 | 0.6733 |
+| multilingual-e5-large (EU AI Act FT) | 0.7199 | 0.7435 | 0.7311 |
+| Qwen3-0.6B (EU AI Act FT) | 0.7118 | 0.7441 | 0.7110 |
+| **Qwen3-4B (EU AI Act FT)** | **0.7596** | **0.7626** | **0.7900** |
+| **Qwen3-8B (EU AI Act FT)** | **0.7744** | **0.7748** | **0.8053** |
+
+Scores are substantially lower than the 85-chunk benchmark. That's expected: the retrieval space is 10× larger and includes an entirely unseen legal document.
+
+### What this reveals
+
+**Fine-tuning transfers across legal domains.** All models were fine-tuned only on EU AI Act data, yet every one improved on GDPR too. The transfer ratio is remarkably consistent at roughly 50%:
 
 | Model | EU AI Act lift | GDPR lift | Transfer ratio |
 |---|---|---|---|
@@ -282,18 +306,26 @@ I evaluated all EU AI Act-trained models on the Dutch GDPR, a completely unseen 
 | Qwen3-4B | +13.5 pts | +7.2 pts | 53% |
 | Qwen3-8B | +13.8 pts | +7.1 pts | 51% |
 
-The models don't just memorise EU AI Act content. They learn transferable Dutch legal retrieval patterns: legal vocabulary, regulatory sentence structure, query-passage matching conventions.
+The models don't just memorise EU AI Act content. They learn transferable patterns: Dutch legal vocabulary, regulatory sentence structure, query-passage matching conventions. One caveat: GDPR is inherently easier than the EU AI Act (all models score +6–9 pts higher on GDPR zero-shot, likely due to shorter, more prescriptive articles). The transfer ratio is computed from deltas, not absolutes, which controls for this.
 
-### 6. Small eval corpora lie
+**Fine-tuning beats scaling.** A fine-tuned 0.6B model outperforms a zero-shot 8B model (13× larger) by +4.4 pts. Fine-tuning on ~2,000 synthetic pairs is worth more than a 13× parameter increase. Combining scale with fine-tuning gives the best result, but with sharply diminishing returns: 0.6B → 4B gains +4.8 pts, while 4B → 8B adds only +1.5 pts.
 
-My initial benchmark had only 85 chunks. The moment I expanded to 912 chunks across two documents, scores dropped dramatically:
+**Open-source zero-shot already beats proprietary.** This was invisible on the old 85-chunk benchmark, where OpenAI (0.8635) edged out e5-large (0.8612). On the harder benchmark, Qwen3-4B zero-shot outperforms OpenAI on every split:
 
-| Model | 85-chunk eval | 912-chunk eval | Drop |
+| Split | Qwen3-4B ZS | OpenAI | Δ |
 |---|---|---|---|
-| Qwen3-4B LoRA (fine-tuned) | 0.9658 | 0.7596 | -0.206 |
-| OpenAI text-embedding-3-large | 0.8635 | 0.6012 | -0.263 |
+| Combined | 0.6494 | 0.6012 | +4.8 pts |
+| EU AI Act | 0.6274 | 0.5682 | +5.9 pts |
+| GDPR | 0.7179 | 0.6733 | +4.5 pts |
 
-With a small corpus, even mediocre models score high because there are few distractors. The larger benchmark is far more realistic. In production, your index will have hundreds or thousands of chunks. Always evaluate on a corpus at least as large as your production index.
+**The gap widens on harder benchmarks.** The advantage of fine-tuning grows as the benchmark gets more realistic:
+
+| Comparison | 85-chunk eval | 912-chunk eval |
+|---|---|---|
+| OpenAI vs e5-large ZS | +0.002 | +0.020 |
+| OpenAI vs Qwen3-4B FT | -0.102 | -0.158 |
+
+**Small eval corpora lie.** NDCG@10 of 0.96 on 85 chunks drops to 0.76 on 912 chunks for the same model. Always evaluate on a corpus at least as large as your production index.
 
 ---
 
