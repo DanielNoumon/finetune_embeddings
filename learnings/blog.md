@@ -299,48 +299,66 @@ Every fine-tuned model improved on a document it never saw. The models were trai
 
 ---
 
-## The GPU Story: RTX 5090 Blackwell
+## Hardware: Training on an RTX 5090
 
-All training beyond the initial Colab experiments ran on an NVIDIA RTX 5090: 32GB VRAM, Blackwell architecture (sm_120). This was one of the first consumer Blackwell GPUs, and I discovered several issues that don't occur on older hardware.
+All training beyond initial Colab experiments ran on a single NVIDIA RTX 5090 (32GB VRAM, Blackwell sm_120). This section covers the practical engineering challenges and workarounds.
 
-### bf16 Collapse
+### bf16 collapse on Blackwell
 
-My first model (multilingual-e5-large) immediately collapsed when trained in bf16 on Blackwell. Gradient norms spiked to 500–4,000+ within the first few steps, and all cosine similarities converged to 1.0. The model was destroyed.
+My first e5-large run collapsed instantly in bf16: gradient norms spiked to 500–4,000+ and all cosine similarities converged to 1.0. bf16 has only 7 mantissa bits (~2 decimal digits of precision). Through 24 transformer layers, rounding errors compound until gradients become noise. This didn't happen on Colab T4 or A100; it's specific to Blackwell's floating-point units.
 
-**Why it happens:** bf16 has only 7 bits of mantissa precision (~2 decimal digits). During the backward pass through 24 transformer layers, rounding errors compound. On Blackwell's floating-point units specifically, this compounding is severe enough to turn gradients into noise. The optimizer then makes random weight updates, collapsing the embedding space.
+**The fix for e5-large:** fp32 + eager attention. Costs 2× VRAM, limiting micro-batch to 8.
 
-> ![Figure: fp32 vs bf16 precision]()
-> *Conceptual diagram: floating-point format comparison. fp32 has 23 mantissa bits (~7 decimal digits); bf16 has only 7 mantissa bits (~2 decimal digits). The mantissa determines precision; fewer bits means more rounding error per operation, which compounds through 24 transformer layers. Source: Google Brain bfloat16 documentation or similar.*
+**Why Qwen3 was fine in bf16:** Qwen3's `RMSNorm` upcasts to fp32 internally before normalization, keeping the numerically sensitive operations precise. This invisible architectural detail is the difference between stability and catastrophic failure. I only discovered this by reading the Qwen3 source code after wondering why the same GPU handled one model family but not the other.
 
-**The fix:** fp32 + eager attention. This costs 2× VRAM (limiting batch size to 8) but is fully stable.
+### CachedMNRL (GradCache): decoupling batch size from VRAM
 
-**The twist:** When I switched to Qwen3-Embedding, bf16 worked perfectly. Qwen3's `RMSNorm` upcasts inputs to fp32 internally before normalization, keeping the critical operations precise even in bf16. This architectural detail, invisible to the user, is the difference between training stability and catastrophic failure.
+MNRL uses in-batch negatives: each query treats every other passage in the micro-batch as a negative. With micro-batch 8 (the fp32 limit on e5-large), that's only 7 negatives per query. Industry recommends 64–128.
 
-### The Batch Size Cascade
+`CachedMultipleNegativesRankingLoss` (from sentence-transformers, based on the GradCache paper) solves this by decoupling the contrastive pool size from VRAM. It works in three steps:
 
-fp32 on e5-large halved my maximum batch size (from 64 to 8). For MNRL, batch size *is* training quality: batch 8 means only 7 in-batch negatives vs. 63 at batch 64. I initially thought this would be crippling.
+1. **Embed** all N samples in small mini-batches *without gradients* (cheap forward passes)
+2. **Compute** the full N×N similarity matrix and loss using the cached embeddings (tiny, just floats)
+3. **Re-embed** in small mini-batches *with gradients*, chaining the cached loss signals into the backward pass
 
-It wasn't. As described above, hard negatives compensated. The batch-8 pipeline produced the **best overall e5-large result** (0.9492). But this experience motivated me to implement GradCache (CachedMNRL), which decouples contrastive pool size from VRAM:
+With `batch_size=128` and `mini_batch_size=4`, each query sees 127 negatives while only 4 samples occupy VRAM at any time. The trade-off is ~20% slower training (every sample is embedded twice).
 
-- `batch_size = 128` → 127 in-batch negatives (contrastive quality)
-- `mini_batch_size = 4` → only 4 samples in VRAM at a time (memory safety)
+In practice, this was less impactful than I expected. My batch-8 e5-large pipeline (only 7 in-batch negatives) produced the best overall e5-large result (0.9492 NDCG@10) because Stage 2 hard negatives compensated for the weak Stage 1 signal. With CachedMNRL's 127 negatives, Stage 1 was stronger (0.9422 vs 0.9327), but Stage 2 added less on top (+0.004 vs +0.017). The pipeline totals converged. Hard negatives are a great equalizer.
 
-The trade-off: ~20% slower (every sample is embedded twice). But it allowed me to run proper large-batch experiments on the RTX 5090, confirming the diminishing-returns finding.
+### Training the 8B model on 32GB
 
-> ![Figure: GradCache mechanism]()
-> *Conceptual diagram: GradCache’s 3-step process. (1) Embed all N samples in small mini-batches without gradients. (2) Compute the full N×N similarity matrix and loss. (3) Re-embed in small mini-batches with gradients, using cached signals from step 2. This decouples contrastive pool size from VRAM. Source: GradCache paper (Gao et al., 2021) or sentence-transformers docs.*
+The Qwen3-8B model pushed the RTX 5090 to its absolute limit. Base weights alone consume ~16GB in bf16, leaving only ~16GB for activations, optimizer states, and PyTorch overhead. Even with LoRA (only 15.3M trainable params) and flash_attention_2 installed, `mini_batch_size` had to be 1 for both stages. Every attempt at mini_batch_size=2 OOM'd.
 
-### The PEFT Checkpoint Bug
+The trickiest issue: training completed successfully, but the script OOM'd during the final evaluation (before `save_pretrained`). During in-trainer eval, the training state (optimizer, cached embeddings) still occupies memory alongside the evaluation forward pass. The fix was setting `eval_batch_size=1`, but I only discovered this after losing the final save and having to recover from Trainer checkpoints.
 
-When fine-tuning LoRA models (4B, 8B) with SentenceTransformers, I discovered that HuggingFace Trainer's `load_best_model_at_end=True` is silently broken with PEFT. The Trainer tries to restore the best checkpoint using a generic `model.load_state_dict()`, but PEFT saves weights with the prefix `base_model.model.*` while SentenceTransformer expects unprefixed keys. The result: the last epoch's model (not the best) gets saved without any error.
+Another 8B-specific gotcha: evaluating a model loaded as `base + PeftModel.from_pretrained()` also OOM'd. The PEFT wrapper adds overhead from duplicate weight references and adapter bookkeeping. The fix: always `merge_and_unload()` before evaluation, which merges the LoRA weights into the base and removes the wrapper entirely.
 
-**The fix:** Set `load_best_model_at_end=False` and add a post-training script that iterates over saved checkpoints, loads each adapter onto the merged Stage 1 base, evaluates, and saves the best. This is essential for anyone combining PEFT + SentenceTransformers.
+### LoRA saves memory, not compute
 
-### Training Costs
+A common misconception: LoRA training should be faster because you're training fewer parameters. In practice, the 0.6B model (560M trainable, full fine-tuning) trained faster per epoch than the 4B model (11.8M trainable, LoRA). Every training step still runs a full forward and backward pass through the entire model. The frozen weights participate in every computation. LoRA only reduces the weight *update* step (a tiny fraction of total time) and the optimizer state memory.
 
-The entire project (all models, both stages, including failed runs and debugging) cost approximately **€0.75 in electricity** on the local RTX 5090. Equivalent cloud compute (H100 at ~$2.95/hr) would have been $100–250 including realistic iteration.
+| Model | Stage | Trainable params | ~Time/epoch | ~Total |
+|---|---|---|---|---|
+| Qwen3-0.6B (full FT) | Stage 1 | 560M | 3.6 min | 11 min |
+| Qwen3-0.6B (full FT) | Stage 2 | 560M | 7 min | 14 min |
+| Qwen3-4B (LoRA) | Stage 1 | 11.8M | 13.3 min | 40 min |
+| Qwen3-4B (LoRA) | Stage 2 | 11.8M | 24.9 min | 50 min |
+| Qwen3-8B (LoRA) | Stage 1 | 15.3M | 18.3 min | 55 min |
+| Qwen3-8B (LoRA) | Stage 2 | 15.3M | 32.3 min | 65 min |
 
-The hidden cost of cloud isn't the per-hour rate; it's the "cost anxiety" tax on iteration speed. On a local GPU, you can start a run, spot an issue after 5 minutes, kill it, fix it, restart, at zero marginal cost. That freedom to iterate cheaply is arguably the biggest advantage of local training for research.
+**Grand total: ~3.9 hours** for all three models, both stages. Stage 2 takes ~1.8× longer per epoch than Stage 1 despite the same sample count: triplets require encoding 3 texts (query + positive + hard negative) vs 2 for pairs.
+
+### The PEFT checkpoint bug
+
+HuggingFace Trainer's `load_best_model_at_end=True` is silently broken with PEFT + SentenceTransformers. The Trainer restores the best checkpoint via `model.load_state_dict()`, but PEFT saves weights with the prefix `base_model.model.*` while SentenceTransformer expects unprefixed keys. The mismatch fails silently: the last epoch's model (not the best) gets saved.
+
+**The fix:** Set `load_best_model_at_end=False` and add a post-training recovery script that loads each saved checkpoint adapter onto the merged Stage 1 base, evaluates, and keeps the best.
+
+### Training costs
+
+The entire project cost approximately **€0.75 in electricity** on the local RTX 5090 (~3 kWh at Amsterdam rates). Equivalent cloud compute (H100 at ~$2.95/hr) would run $100–250 including realistic iteration: failed runs, config errors, debugging.
+
+The hidden cost of cloud isn't the hourly rate; it's the tax on iteration speed. On a local GPU, you start a run, spot an issue after 5 minutes, kill it, fix it, restart, at zero marginal cost. That freedom to iterate cheaply matters more than raw throughput for research and experimentation.
 
 ---
 
