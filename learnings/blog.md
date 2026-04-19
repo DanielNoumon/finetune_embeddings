@@ -70,7 +70,7 @@ I needed `(query, relevant_chunk)` pairs to train the embedding model. Real user
 
 For each chunk, I generated 3–5 diverse Dutch queries across types: factual, definitional, procedural, and scenario-based. Diversity ensures the model learns to match varied phrasings, not just keyword overlap.
 
-The result: **2,284 query-chunk pairs** from 571 unique chunks. I split by chunk ID (not by pair) to prevent data leakage: all queries for a given chunk stay in the same split.
+The result: **2,284 query-chunk pairs** from 571 unique chunks (2 chunks were too short to generate meaningful queries). I split by chunk ID (not by pair) to prevent data leakage: all queries for a given chunk stay in the same split.
 
 | Split | Pairs | Chunks |
 |---|---|---|
@@ -118,7 +118,7 @@ Before fine-tuning anything, I measured how well existing models handle the task
 | Qwen3-Embedding-8B | 0.8836 | Open-source decoder, 8B params |
 | OpenAI text-embedding-3-large | 0.8635 | Proprietary, via Azure API |
 
-The proprietary model and the open-source e5-large start at virtually the same level on this task (0.8635 vs 0.8612). OpenAI has no inherent advantage on Dutch legal text; its strength is breadth across languages and domains, not depth on any specific one. The Qwen3 family scales predictably: 0.6B → 4B → 8B yields steady gains, but none break 0.90 without fine-tuning.
+The proprietary model and the open-source e5-large start at virtually the same level on this task (0.8635 vs 0.8612). OpenAI has no inherent advantage on Dutch legal text; its strength is breadth across languages and domains, not depth on any specific one. The Qwen3 family shows diminishing returns at scale: the jump from 0.6B to 4B is large (~8 points), but 4B to 8B adds less than 1 point. None break 0.90 without fine-tuning.
 
 ---
 
@@ -128,7 +128,7 @@ I used a two-stage approach that's become standard in embedding fine-tuning:
 
 ### Stage 1: In-Batch Negatives (MNRL)
 
-**Multiple Negatives Ranking Loss (MNRL)** treats every other passage in the batch as a negative example. With batch size 64, each query gets 63 negatives "for free". The model learns: "given this query, the correct passage should be more similar than all 63 other passages in this batch."
+**Multiple Negatives Ranking Loss (MNRL)** treats every other passage in the batch as a negative example. With batch size 128, each query gets 127 negatives "for free". The model learns: "given this query, the correct passage should be more similar than all 127 other passages in this batch."
 
 I wrapped MNRL in **MatryoshkaLoss**, which trains the model to produce useful embeddings at multiple truncated dimensionalities (1024, 768, 512, 256, 128, 64) simultaneously. This means you can use 1024-dim for maximum accuracy or 128-dim for 8× faster search, no retraining needed.
 
@@ -147,7 +147,7 @@ I used the Stage 1 model to mine hard negatives:
 
 The key insight: mining from the *adapted* model (not the base) produces more informative negatives. A passage that fools the already-fine-tuned model is a genuinely confusing case.
 
-Stage 2 then continues training from the Stage 1 checkpoint with these hard negatives added to the dataset. A lower learning rate (typically half of Stage 1) prevents catastrophic forgetting.
+Stage 2 then continues training from the Stage 1 checkpoint with these hard negatives added to the dataset. A lower learning rate prevents catastrophic forgetting.
 
 ![Training loss: Qwen3-4B LoRA and Qwen3-0.6B, Stage 1 and Stage 2](figures/cleaned_loss.png)
 *W&B training loss for the four Qwen3 runs. Stage 1 lines (mnrl) are longer than Stage 2 lines (hard-neg) because Stage 1 trains for 3 epochs vs 2. The 0.6B model starts with higher loss (~13) than the 4B (~9), reflecting the stronger pretrained representations of the larger model. All runs converge to ~2.*
@@ -156,7 +156,7 @@ Stage 2 then continues training from the Stage 1 checkpoint with these hard nega
 
 ## The Models
 
-I fine-tuned four model families, each teaching me something different:
+I fine-tuned four models across two families, each teaching me something different:
 
 ### multilingual-e5-large (560M, encoder)
 
@@ -193,7 +193,7 @@ All results on the held-out eval set: 340 queries, 85 corpus chunks, NDCG@10 at 
 
 The e5-large appears twice because the batch-8 RTX pipeline (fewer in-batch negatives, more hard negative gain) and the batch-64 Colab pipeline produced different Stage 1/Stage 2 splits, but converged to similar totals (see [The Surprising Findings](#the-surprising-findings)).
 
-Fine-tuning adds 8–15 points of NDCG@10 across every model tested. The 4B LoRA model, training just 0.29% of its parameters on 1,944 synthetic pairs, beats OpenAI's best embedding API by over 10 points. The 8B model matches the 4B at dim=1024 but offers marginal gains at lower dimensions. The 4B is the sweet spot given the 2× VRAM cost of 8B.
+Fine-tuning adds 8–15 points of NDCG@10 across every model tested. The 4B LoRA model, training just 0.29% of its parameters on 1,944 synthetic pairs, beats OpenAI's best embedding API by over 10 points. The 8B model matches the 4B at dim=1024 but costs 2× the VRAM. The 4B is the sweet spot.
 
 ### Matryoshka: Quality at Every Size
 
@@ -220,7 +220,7 @@ OpenAI's `text-embedding-3-large` also supports Matryoshka dimensions. Here's th
 | 256 | 0.8166 | **0.9420** | +0.1254 |
 | 128 | 0.7598 | **0.9188** | +0.1590 |
 
-The gap *widens* at lower dimensions. OpenAI's Matryoshka degradation is much steeper (12% relative decline from full to 128-dim vs. only 4.5% for my fine-tuned model). Domain-specific fine-tuning with MatryoshkaLoss teaches the model to be useful at every dimensionality.
+The gap *widens* at lower dimensions. OpenAI's Matryoshka degradation is much steeper (12% relative decline from full to 128-dim vs. ~5% for my fine-tuned model). Domain-specific fine-tuning with MatryoshkaLoss teaches the model to be useful at every dimensionality.
 
 ---
 
@@ -371,7 +371,7 @@ Further improvements I'm exploring:
 
 3. **Lower contrastive temperature**: NVIDIA's embedding fine-tuning recipe uses temperature 0.02 (vs. the default 0.05). This sharpens the loss landscape and focuses the model on the hardest negatives. Worth testing now that hard negative filtering is in place.
 
-4. **Hyperparameter sweeps**: confirming that the single LR/epoch configuration used throughout is actually near-optimal. A minimal sweep (3 LRs × 3 epoch counts = 9 runs, ~3 hours) would provide this confidence.
+4. **Hyperparameter sweeps**: confirming that the single LR/epoch configuration used throughout is actually near-optimal.
 
 ---
 
