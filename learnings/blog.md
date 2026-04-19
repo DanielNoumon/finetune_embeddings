@@ -81,7 +81,13 @@ The proprietary model and the open-source e5-large start at virtually the same l
 
 All experiments use the same evaluation protocol to ensure fair comparison.
 
-**Metric: NDCG@10** (Normalized Discounted Cumulative Gain at rank 10), the primary metric throughout this post. It measures how well the model ranks the correct passage within the top 10 results for each query, with higher-ranked correct results scoring more. A score of 1.0 means the correct passage is always ranked #1; 0.5 means correct passages are scattered around the results.
+**Metric: NDCG@10** (Normalized Discounted Cumulative Gain at rank 10), the primary metric throughout this post. It measures how well the model ranks the correct passage within the top 10 results for each query, with higher-ranked correct results scoring more.
+
+$$\text{DCG@}k = \sum_{i=1}^{k} \frac{rel_i}{\log_2(i + 1)}$$
+
+$$\text{NDCG@}k = \frac{\text{DCG@}k}{\text{IDCG@}k}$$
+
+Where $rel_i$ is the relevance score of the result at rank $i$ (1 if the passage is relevant, 0 otherwise), and $\text{IDCG@}k$ is the DCG of the ideal ranking (all relevant documents ranked first). A score of 1.0 means the correct passage is always ranked #1; 0.5 means correct passages are scattered around the results.
 
 **Eval set:** 340 queries mapped to 85 unique corpus chunks (15% of the data, split by chunk ID to prevent leakage). For each query, the model must rank the correct chunk above all 84 other chunks by cosine similarity.
 
