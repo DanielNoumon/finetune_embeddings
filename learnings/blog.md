@@ -4,9 +4,9 @@
 
 ---
 
-## The Problem
+## Introduction
 
-You're building a retrieval-augmented generation (RAG) pipeline for Dutch legal documents. You need an embedding model that can take a user's question, say, *"Welke verplichtingen gelden voor aanbieders van AI-systemen met een hoog risico?"*, and find the exact article or paragraph that answers it, out of hundreds of chunks.
+Retrieval-augmented generation (RAG) over Dutch legal documents requires an embedding model that can match a user's question to the exact article or paragraph that answers it, out of hundreds of chunks.
 
 Off-the-shelf embedding models like OpenAI's `text-embedding-3-large` are impressively general. They handle 100+ languages, score near the top of MTEB benchmarks, and work out of the box. But "general" isn't "specialised". When your corpus is a 144-page Dutch regulation full of cross-references, numbered paragraphs, and domain-specific terminology, a general model leaves a lot of retrieval quality on the table.
 
